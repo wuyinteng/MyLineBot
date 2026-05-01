@@ -76,6 +76,7 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入代號查詢"))
 
 if __name__ == "__main__":
-    # 修改：讓雲端自動偵測 Port
+    # Render 會透過環境變數 PORT 告訴程式要聽哪個孔
+    # 如果在本地電腦執行，則預設使用 5000 埠
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
