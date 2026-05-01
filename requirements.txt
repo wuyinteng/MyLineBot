@@ -1,8 +1,8 @@
 flask
-line-bot-sdk
+line-bot-sdk==2.3.7
 yfinance
 FinMind
 tqdm
 apscheduler
 gunicorn
-pandas  
+pandas
