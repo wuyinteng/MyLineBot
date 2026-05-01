@@ -15,7 +15,7 @@ dl = DataLoader()
 # 【在此填入你的金鑰】
 # 請務必確保你的 GitHub 儲存庫（Repository）是私人的 (Private)
 # ==========================================================
-LINE_CHANNEL_ACCESS_TOKEN = '0PkQu4ePT9fMFke +i/e6A1cxm7dD4Nt04K47Uq7Pxy5vIUxKnIzaYUCBcNGJ1Y/RWscQlvRknxmtdioggR+rI LSsd28GBtd1lbDcvPgv1UkrIcrrDEOgHZNgQl1b6HH8mRpvvDLUBzPH4FVOnOGwAdB04t89/1O/w1cDnyilFU='
+LINE_CHANNEL_ACCESS_TOKEN = '0PkQu4ePT9fMFke5+i/e6A1cxm7dD4Nt04K47Uq7Pxy5vIUxKnIzaYUCBcNGJ1Y/RWscQlvRknxmtdioggR+rI LSsd28GBtd1lbDcvPgv1UkrIcrrDEOgHZNgQl1b6HH8mRpvvDLUBzPH4FVOnOGwAdB04t89/1O/w1cDnyilFU='
 LINE_CHANNEL_SECRET = '6394456d4596cc6aadb9c92dda96b296'
 # ==========================================================
 
