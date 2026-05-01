@@ -1,18 +1,72 @@
-import os  # 1. 必須新增這行，才能讀取雲端環境設定 
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import yfinance as yf
-from FinMind.data import DataLoader  # 匯入台股工具
+from FinMind.data import DataLoader
 import datetime
+from apscheduler.schedulers.background import BackgroundScheduler # 鬧鐘工具 
 
 app = Flask(__name__)
 dl = DataLoader()
 
-# --- 你的金鑰已保留在下方 ---
+# --- 請替換你的金鑰與 ID ---
 line_bot_api = LineBotApi('0PkQu4ePT9fMFke5+i/e6A1cxm7dD4Nt04K47Uq7Pxy5vIUxKnIzaYUCBcNGJ1Y/RWscQlvRknxmtdioggR+rI LSsd28GBtd1lbDcvPgv1UkrIcrrDEOgHZNgQl1b6HH8mRpvvDLUBzPH4FVOnOGwAdB04t89/1O/w1cDnyilFU=')
+
 handler = WebhookHandler('6394456d4596cc6aadb9c92dda96b296')
+
+MY_USER_ID = 'U288dc1f88aabee28ca0342d542b8040f'
+
+
+# 【報價核心邏輯】抽離出來供手動與定時共用 [cite: 60, 65, 69]
+def get_quote(msg):
+    msg = msg.upper().strip()
+    # 台股邏輯 (數字) [cite: 69]
+    if msg.isdigit() and len(msg) >= 4:
+        try:
+            start = (datetime.datetime.now() - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+            df = dl.taiwan_stock_daily(stock_id=msg, start_date=start)
+            if not df.empty:
+                data = df.iloc[-1]
+                return f"【台股】{data.get('stock_name', '股票')} ({msg})\n價格：{data['close']} TWD"
+        except: return "台股連線異常"
+
+    # 美股邏輯 (英文) [cite: 63, 69]
+    elif msg.isalpha() and 1 <= len(msg) <= 5:
+        try:
+            stock = yf.Ticker(msg)
+            df = stock.history(period='1d')
+            if not df.empty:
+                price = round(df['Close'].iloc[-1], 2)
+                return f"【美股】代碼：{msg}\n目前價格：${price} USD"
+        except: return "美股連線異常"
+    return None
+
+
+# 【定時任務】定義每天要執行的動作 [cite: 107]
+def daily_report():
+    targets = ["2330", "2308", "2454", "3711", "2408"] # 填入你想要每天收到的股票
+    results = [get_quote(t) for t in targets if get_quote(t)]
+    if results:
+        report = "台股開盤報價：\n\n" + "\n---\n".join(results)
+        # 使用 push_message 主動發送 
+        line_bot_api.broadcast(TextSendMessage(text=report)) 
+def us_night_report():
+    targets = ["AAPL", "TSLA", "NVDA", "MSFT" ,"AMD" , "AMZN" ,"MU"] # 填入你晚上想看的美股代號
+    results = [get_quote(t) for t in targets if get_quote(t)]
+    if results:
+        report = "美股開盤報價：\n\n" + "\n---\n".join(results)
+        line_bot_api.broadcast(TextSendMessage(text=report))
+
+
+# 【啟動鬧鐘】設定時間 [cite: 107]
+scheduler = BackgroundScheduler(timezone="Asia/Taipei")
+# 設定週一至週五，台股早上 09:00 報價
+scheduler.add_job(daily_report, 'cron', day_of_week='mon-fri', hour=9, minute=0)
+# 設定週一至週五，美股晚上 09:30 報價
+scheduler.add_job(us_night_report, 'cron', day_of_week='mon-fri', hour=14, minute=36)
+
+scheduler.start()
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -25,44 +79,13 @@ def callback():
     return 'OK'
 
 @handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_msg = event.message.text.upper().strip()
-    
-    # --- 邏輯 A：台股報價 ---
-    if user_msg.isdigit() and len(user_msg) >= 4:
-        try:
-            start_date = (datetime.datetime.now() - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
-            df = dl.taiwan_stock_daily(stock_id=user_msg, start_date=start_date)
-            if not df.empty:
-                latest_data = df.iloc[-1]
-                price = latest_data['close']
-                stock_name = latest_data.get('stock_name', '該股票')
-                reply_text = f"【台股報價】\n{stock_name} ({user_msg})\n收盤價格：{price} TWD"
-            else:
-                reply_text = f"查不到台股代號「{user_msg}」。"
-        except Exception as e:
-            reply_text = f"台股連線出錯。"
-
-    # --- 邏輯 B：美股報價 ---
-    elif user_msg.isalpha() and 1 <= len(user_msg) <= 5:
-        try:
-            stock = yf.Ticker(user_msg)
-            data = stock.history(period='1d')
-            if not data.empty:
-                price = round(data['Close'].iloc[-1], 2)
-                reply_text = f"【美股報價】\n股票代碼：{user_msg}\n目前價格：${price} USD"
-            else:
-                reply_text = f"查不到美股代號「{user_msg}」。"
-        except:
-            reply_text = "美股連線出錯。"
-            
-    # --- 邏輯 C：其他訊息 ---
+def handle_message(event): 
+    user_msg = event.message.text
+    result = get_quote(user_msg)
+    if result:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result))
     else:
-        reply_text = f"收到訊息：{user_msg}\n請輸入台股代號(如 2330) 或美股代號(如 TSLA)"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入代號查詢"))
 
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-
-# 2. 修改啟動邏輯，適應雲端伺服器的 Port 
 if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5000))  # 自動抓取雲端指定的 Port，抓不到就用 5000 
-    app.run(host='0.0.0.0', port=port)  # host 設定為 0.0.0.0 才能接收外部連線
+    app.run(port=5000)
