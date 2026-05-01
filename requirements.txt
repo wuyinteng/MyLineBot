@@ -1,5 +1,5 @@
 flask
-line-bot-sdk==2.3.7
+line-bot-sdk<3.0.0
 yfinance
 FinMind
 tqdm
