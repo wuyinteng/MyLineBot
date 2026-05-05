@@ -1,6 +1,8 @@
-flask
+Flask
 line-bot-sdk
 yfinance
 FinMind
-apscheduler
+APScheduler
+pandas
+tqdm
 gunicorn
