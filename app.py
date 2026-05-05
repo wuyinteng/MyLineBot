@@ -36,26 +36,23 @@ except Exception as e:
 def get_quote(msg):
     msg = msg.upper().strip()
     
-    # 1. 台股報價邏輯
+    # 1. 台股報價邏輯 (改用 FinMind，繞過 Yahoo 阻擋)
     if msg.isdigit() and len(msg) >= 4:
         try:
             stock_name = tw_stock_dict.get(msg, "")
             name_display = f"{stock_name} ({msg})" if stock_name else f"代碼：{msg}"
             
-            # 先試上市 (.TW)，改抓 1個月(1mo) 確保資料至少有兩天以上
-            stock = yf.Ticker(f"{msg}.TW")
-            df = stock.history(period='1mo')
+            # 設定抓取過去 10 天的資料，確保有足夠的 K 棒
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=10)).strftime('%Y-%m-%d')
             
-            # 若為空，再試上櫃 (.TWO)
+            # 使用 FinMind 抓取台股資料
+            df = dl.taiwan_stock_daily(stock_id=msg, start_date=start_date)
+            
             if df.empty:
-                stock = yf.Ticker(f"{msg}.TWO")
-                df = stock.history(period='1mo')
-                
-            if df.empty:
-                return f"找不到台股【{name_display}】資料 (可能 Yahoo 伺服器暫時阻擋)"
+                return f"找不到台股【{name_display}】資料"
                 
             if len(df) >= 2:
-                tc, to, pc = df['Close'].iloc[-1], df['Open'].iloc[-1], df['Close'].iloc[-2]
+                tc, to, pc = df['close'].iloc[-1], df['open'].iloc[-1], df['close'].iloc[-2]
                 dp, pp = tc - pc, (tc - pc) / pc * 100
                 do, po = tc - to, (tc - to) / to * 100
                 sp = "🔺" if dp > 0 else ("🔻" if dp < 0 else "➖")
@@ -67,17 +64,16 @@ def get_quote(msg):
             else:
                 return f"【{name_display}】歷史資料筆數不足，無法計算。"
         except Exception as e:
-            # 發生錯誤時不再默默 pass，而是回傳錯誤訊息，方便除錯
-            return f" 查詢台股 {msg} 發生錯誤：{str(e)}"
+            return f"查詢台股 {msg} 發生錯誤：{str(e)}"
 
-    # 2. 美股報價邏輯
+    # 2. 美股報價邏輯 (維持使用 yfinance)
     elif msg.isalpha() and 1 <= len(msg) <= 5:
         try:
             stock = yf.Ticker(msg)
-            df = stock.history(period='1mo') # 美股一樣拉長區間防錯
+            df = stock.history(period='1mo') 
             
             if df.empty:
-                return f" 找不到美股【{msg}】資料"
+                return f"找不到美股【{msg}】資料"
                 
             if len(df) >= 2:
                 try: comp_name = stock.info.get('shortName', msg)
@@ -95,7 +91,7 @@ def get_quote(msg):
             else:
                 return f"【{msg}】歷史資料筆數不足，無法計算。"
         except Exception as e:
-            return f" 查詢美股 {msg} 發生錯誤：{str(e)}"
+            return f"查詢美股 {msg} 發生錯誤：{str(e)}"
             
     return None
 
