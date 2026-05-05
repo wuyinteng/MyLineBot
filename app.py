@@ -32,22 +32,27 @@ try:
 except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
-# --- 報價取得函式 (已整合即時更新與中文名稱) ---
+# --- 報價取得函式 (已加上除錯回報機制與拉長抓取時間) ---
 def get_quote(msg):
     msg = msg.upper().strip()
     
-    # 1. 台股報價邏輯 (使用 yfinance 達成盤中即時更新)
+    # 1. 台股報價邏輯
     if msg.isdigit() and len(msg) >= 4:
         try:
             stock_name = tw_stock_dict.get(msg, "")
             name_display = f"{stock_name} ({msg})" if stock_name else f"代碼：{msg}"
             
-            # 先試上市 (.TW)，不行再試上櫃 (.TWO)
+            # 先試上市 (.TW)，改抓 1個月(1mo) 確保資料至少有兩天以上
             stock = yf.Ticker(f"{msg}.TW")
-            df = stock.history(period='5d')
+            df = stock.history(period='1mo')
+            
+            # 若為空，再試上櫃 (.TWO)
             if df.empty:
                 stock = yf.Ticker(f"{msg}.TWO")
-                df = stock.history(period='5d')
+                df = stock.history(period='1mo')
+                
+            if df.empty:
+                return f"找不到台股【{name_display}】資料 (可能 Yahoo 伺服器暫時阻擋)"
                 
             if len(df) >= 2:
                 tc, to, pc = df['Close'].iloc[-1], df['Open'].iloc[-1], df['Close'].iloc[-2]
@@ -59,13 +64,21 @@ def get_quote(msg):
                 return (f"【台股】{name_display}\n目前價格：{tc:.2f} TWD\n---\n"
                         f"前日收盤：{pc:.2f} TWD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
                         f"今日開盤：{to:.2f} TWD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
-        except: pass
+            else:
+                return f"【{name_display}】歷史資料筆數不足，無法計算。"
+        except Exception as e:
+            # 發生錯誤時不再默默 pass，而是回傳錯誤訊息，方便除錯
+            return f" 查詢台股 {msg} 發生錯誤：{str(e)}"
 
     # 2. 美股報價邏輯
     elif msg.isalpha() and 1 <= len(msg) <= 5:
         try:
             stock = yf.Ticker(msg)
-            df = stock.history(period='5d')
+            df = stock.history(period='1mo') # 美股一樣拉長區間防錯
+            
+            if df.empty:
+                return f" 找不到美股【{msg}】資料"
+                
             if len(df) >= 2:
                 try: comp_name = stock.info.get('shortName', msg)
                 except: comp_name = msg
@@ -79,7 +92,11 @@ def get_quote(msg):
                 return (f"【美股】{comp_name} ({msg})\n目前價格：${tc:.2f} USD\n---\n"
                         f"前日收盤：${pc:.2f} USD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
                         f"今日開盤：${to:.2f} USD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
-        except: pass
+            else:
+                return f"【{msg}】歷史資料筆數不足，無法計算。"
+        except Exception as e:
+            return f" 查詢美股 {msg} 發生錯誤：{str(e)}"
+            
     return None
 
 # --- 美股四大指數報價 (早上 08:00) ---
@@ -118,10 +135,9 @@ def us_night_report():
 # --- 排程器設定 (Asia/Taipei) ---
 scheduler = BackgroundScheduler(timezone="Asia/Taipei")
 # 早上 08:00 美股收盤報價 (美股交易日對應台時間週二至週六)
-scheduler.add_job(us_market_closing_report, 'cron', day_of_week='tue-sat', hour=8, minute=0)
+scheduler.add_job(us_market_closing_report, 'cron', day_of_week='mon-sat', hour=8, minute=0)
 
 # 台股盤前與美股開盤報價
-
 scheduler.add_job(daily_report, 'cron', day_of_week='mon-fri', hour=9, minute=1)
 scheduler.add_job(us_night_report, 'cron', day_of_week='mon-fri', hour=21, minute=31)
 scheduler.start()
@@ -145,7 +161,6 @@ def handle_message(event):
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入代號查詢"))
 
 if __name__ == "__main__":
-
     # [修改] 針對 Render 環境自動取得 Port 號，並監聽 0.0.0.0
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
