@@ -6,3 +6,6 @@ APScheduler
 pandas
 tqdm
 gunicorn
+matplotlib
+mplfinance
+requests

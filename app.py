@@ -1,16 +1,27 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage, QuickReply, QuickReplyButton, MessageAction
 import yfinance as yf
 from FinMind.data import DataLoader
 import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 import time
 import pandas as pd
-import os  # [新增] 讀取雲端系統資訊必備
+import os  # 讀取雲端系統資訊必備
+
+# --- [新增] 畫圖所需套件 ---
+import matplotlib
+matplotlib.use('Agg') # ⚠️非常重要：告訴 matplotlib 在無螢幕的雲端環境背景畫圖，避免當機
+import mplfinance as mpf
+import requests
+import base64
+import io
 
 app = Flask(__name__)
+
+# --- ImgBB API 金鑰 ---
+IMGBB_API_KEY = "4bc61e9d363f21433c906beb7440dd92"
 
 # --- FinMind 伺服器登入 ---
 dl = DataLoader()
@@ -22,7 +33,7 @@ handler = WebhookHandler('6394456d4596cc6aadb9c92dda96b296')
 
 MY_USER_ID = 'U288dc1f88aabee28ca0342d542b8040f'
 
-# --- [優化] 建立台股名稱字典 (啟動時執行一次，加快查詢速度) ---
+# --- 建立台股名稱字典 (啟動時執行一次，加快查詢速度) ---
 tw_stock_dict = {}
 try:
     print("正在從 FinMind 載入台股清單以優化名稱查詢...")
@@ -32,7 +43,42 @@ try:
 except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
-# --- 報價取得函式 (已加上除錯回報機制與拉長抓取時間) ---
+# --- [新增] 畫 K 線圖並上傳的專屬函式 ---
+def generate_and_upload_chart(stock_id):
+    try:
+        # 判斷是台股還是美股 (台股需要加上 .TW 讓 yfinance 抓取)
+        ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
+        stock = yf.Ticker(ticker)
+        df = stock.history(period="3mo")
+        if df.empty:
+            return None
+
+        # 繪製專業 K 線圖 (包含 5日/20日均線與成交量)
+        buf = io.BytesIO()
+        mc = mpf.make_marketcolors(up='r', down='g', inherit=True) # 設定台股紅漲綠跌
+        s = mpf.make_mpf_style(marketcolors=mc)
+        mpf.plot(df, type='candle', volume=True, mav=(5, 20), style=s, savefig=buf)
+
+        # 將圖片轉換並上傳至 ImgBB
+        buf.seek(0)
+        img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        res = requests.post(
+            "https://api.imgbb.com/1/upload",
+            data={
+                "key": IMGBB_API_KEY,
+                "image": img_base64
+            }
+        )
+        
+        # 取得圖片網址
+        if res.status_code == 200:
+            return res.json()["data"]["url"]
+        return None
+    except Exception as e:
+        print(f"畫圖失敗: {e}")
+        return None
+
+# --- 報價取得函式 ---
 def get_quote(msg):
     msg = msg.upper().strip()
     
@@ -151,12 +197,59 @@ def callback():
     except InvalidSignatureError: abort(400)
     return 'OK'
 
+# --- [優化] LINE 收到訊息的處理邏輯 (結合看圖按鈕) ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event): 
-    result = get_quote(event.message.text)
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入代號查詢"))
+    user_msg = event.message.text.strip().upper()
+    user_id = event.source.user_id # 取出使用者 ID，準備稍後傳圖片用
+
+    # 狀況 A：如果訊息開頭是「圖」，代表使用者想看 K 線圖 (或點擊了快捷按鈕)
+    if user_msg.startswith("圖"):
+        stock_id = user_msg.replace("圖", "")
+        
+        # 1. 先用 reply_message 快速安撫使用者 (避免 LINE 等太久報錯)
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(text=f"正在為您繪製 {stock_id} 的專業 K 線圖，請稍候幾秒鐘...")
+        )
+        
+        # 2. 開始在背景畫圖並上傳到 ImgBB
+        img_url = generate_and_upload_chart(stock_id)
+        
+        # 3. 畫完之後，用 push_message 主動推播圖片過去
+        if img_url:
+            line_bot_api.push_message(
+                user_id, 
+                ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)
+            )
+        else:
+            line_bot_api.push_message(
+                user_id, 
+                TextSendMessage(text="圖片產生失敗，可能是網路超載或查無此股票資料，請稍後再試。")
+            )
+        return
+
+    # 狀況 B：一般的文字報價查詢
+    result = get_quote(user_msg)
+    
+    if result and "找不到" not in result and "發生錯誤" not in result:
+        # 如果報價成功，建立一個「看 K 線圖」的魔法按鈕
+        quick_reply = QuickReply(items=[
+            QuickReplyButton(action=MessageAction(label="看 K 線圖", text=f"圖{user_msg}"))
+        ])
+        
+        # 回傳報價文字 + 魔法按鈕
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(text=result, quick_reply=quick_reply)
+        )
+    else:
+        # 如果報價失敗或查無代號，就只回傳純文字
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(text=result if result else "請輸入正確的股票代號查詢 (例如: 2330 或 AAPL)")
+        )
 
 if __name__ == "__main__":
-    # [修改] 針對 Render 環境自動取得 Port 號，並監聽 0.0.0.0
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
