@@ -44,6 +44,7 @@ except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
 # --- [修改] 核心畫圖函式 (全英文專業版，破解 Yahoo 時差 Bug + 修復台股走勢) ---
+# --- [修改] 核心畫圖函式 (終極防護版：解決走勢圖畫不出來的問題) ---
 def generate_chart(stock_id, chart_type="K"):
     try:
         df = pd.DataFrame()
@@ -54,7 +55,6 @@ def generate_chart(stock_id, chart_type="K"):
             start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime('%Y-%m-%d')
             df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
             if not df.empty:
-                # 轉換欄位名稱，讓 mplfinance 看得懂
                 df = df.rename(columns={'date': 'Date', 'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'})
                 df['Date'] = pd.to_datetime(df['Date'])
                 df.set_index('Date', inplace=True)
@@ -64,10 +64,8 @@ def generate_chart(stock_id, chart_type="K"):
             dt_format = "%m/%d"
             
         else:
-            # 【美股 或 當日走勢圖】：使用 yfinance
-            session = requests.Session()
-            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-            stock = yf.Ticker(ticker, session=session)
+            # 【美股 或 當日走勢圖】：使用 yfinance原生連線 (移除自訂 session 避免衝突)
+            stock = yf.Ticker(ticker)
             
             if chart_type == "K":
                 df = stock.history(period="3mo")
@@ -75,28 +73,61 @@ def generate_chart(stock_id, chart_type="K"):
                 title_suffix = "3-Month Chart"
                 dt_format = "%m/%d"
             else:
-                # 破解 Yahoo 時差 Bug：直接抓 5 天的資料，再手動切出「最後一天」
-                # 修正 1：台股 1m 資料常壞掉，自動切換成 5m 比較穩！
+                # 【當日走勢圖專屬邏輯】
+                # 台股用 5m 比較穩，美股維持 1m
                 req_interval = "5m" if stock_id.isdigit() else "1m"
+                
+                # 策略：抓 5 天資料確保不漏接
                 df = stock.history(period="5d", interval=req_interval)
                 
                 if not df.empty:
-                    # 修正 2：清掉 Yahoo 資料可能暗藏的空值 (NaN)，防止畫圖引擎崩潰
-                    df = df.dropna()
+                    df = df.dropna()  # 清除殘缺空值
                     
-                    if not df.empty:
-                        # 抓取這份資料中「最新的一天」的日期
-                        last_day = df.index[-1].date()
-                        # 魔法過濾：只保留跟「最新一天」相同的資料，剔除前四天
-                        df = df[df.index.date == last_day]
+                if not df.empty and len(df) >= 2:
+                    # ⚠️ 關鍵修復 1：拔除 yfinance 帶來的時區，防止 mplfinance 畫圖崩潰
+                    df.index = df.index.tz_localize(None)
+                    
+                    # ⚠️ 關鍵修復 2：精準只抓最後一天的資料
+                    last_day = df.index[-1].date()
+                    df = df[df.index.date == last_day]
                     
                 plot_type = 'line'
                 title_suffix = "Intraday Trend"
                 dt_format = "%H:%M"
 
-        if df.empty: 
-            print(f"[{stock_id}] 抓不到資料")
+        # ⚠️ 關鍵修復 3：雙重檢查，如果資料少於 2 筆，絕對不能畫圖 (會當機)，直接擋下
+        if df.empty or len(df) < 2: 
+            print(f"[{stock_id}] 當日走勢資料不足或 API 阻擋，無法繪圖")
             return None
+
+        # 設定全英文圖表標題
+        title_text = f"[{stock_id}] {title_suffix}"
+
+        # --- 開始繪圖 ---
+        buf = io.BytesIO()
+        mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
+        s = mpf.make_mpf_style(marketcolors=mc)
+
+        # 畫圖
+        mpf.plot(df, type=plot_type, volume=(chart_type=="K"), style=s, 
+                 title=title_text, ylabel="Price", ylabel_lower="Volume",
+                 datetime_format=dt_format, savefig=buf, show_nontrading=False)
+
+        # --- 上傳至 ImgBB ---
+        buf.seek(0)
+        img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        res = requests.post("https://api.imgbb.com/1/upload", data={"key": IMGBB_API_KEY, "image": img_base64})
+        
+        if res.status_code == 200:
+            return res.json()["data"]["url"]
+        return None
+        
+    except Exception as e:
+        import traceback
+        print(f"畫圖發生嚴重錯誤: {e}")
+        print(traceback.format_exc()) # 印出詳細錯誤方便未來抓蟲
+        return None
+
 
         # 設定全英文圖表標題
         title_text = f"[{stock_id}] {title_suffix}"
