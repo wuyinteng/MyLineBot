@@ -12,7 +12,7 @@ import os  # 讀取雲端系統資訊必備
 
 # --- [新增] 畫圖所需套件 ---
 import matplotlib
-matplotlib.use('Agg') # ⚠️非常重要：告訴 matplotlib 在無螢幕的雲端環境背景畫圖，避免當機
+matplotlib.use('Agg') 
 import mplfinance as mpf
 import requests
 import base64
@@ -44,22 +44,60 @@ except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
 # --- [新增] 畫 K 線圖並上傳的專屬函式 ---
+import urllib.request
+import matplotlib as mpl
+
+# --- [升級版] 畫 K 線圖並上傳的專屬函式 ---
 def generate_and_upload_chart(stock_id):
     try:
-        # 判斷是台股還是美股 (台股需要加上 .TW 讓 yfinance 抓取)
+        # 1. 抓取資料 (台股需要加上 .TW)
         ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
         stock = yf.Ticker(ticker)
         df = stock.history(period="3mo")
         if df.empty:
             return None
 
-        # 繪製專業 K 線圖 (包含 5日/20日均線與成交量)
+        # 2. 自動下載並設定開源中文字型 (避免雲端出現方塊字)
+        font_path = "TaipeiSansTCBeta-Regular.ttf"
+        if not os.path.exists(font_path):
+            print("正在下載中文字型...")
+            urllib.request.urlretrieve("https://raw.githubusercontent.com/jonnykuo/Taipei-Sans-TC/master/TaipeiSansTCBeta-Regular.ttf", font_path)
+        
+        # 將下載好的字型載入 Matplotlib
+        font_prop = mpl.font_manager.FontProperties(fname=font_path)
+        mpl.font_manager.fontManager.addfont(font_path)
+
+        # 3. 取得股票中文名稱 (如果是台股的話)
+        stock_name = tw_stock_dict.get(stock_id, "") if stock_id.isdigit() else ""
+        title_text = f"{stock_name} ({stock_id}) 走勢圖" if stock_name else f"{stock_id} 走勢圖"
+
+        # 4. 繪製純 K 線圖與成交量
         buf = io.BytesIO()
         mc = mpf.make_marketcolors(up='r', down='g', inherit=True) # 設定台股紅漲綠跌
-        s = mpf.make_mpf_style(marketcolors=mc)
-        mpf.plot(df, type='candle', volume=True, mav=(5, 20), style=s, savefig=buf)
+        
+        # 建立專屬樣式，並套用中文字型
+        s = mpf.make_mpf_style(
+            marketcolors=mc, 
+            rc={
+                'font.family': font_prop.get_name(), # 指定中文字型
+                'axes.unicode_minus': False          # 確保負號正常顯示
+            }
+        )
 
-        # 將圖片轉換並上傳至 ImgBB
+        # 執行畫圖：移除均線 (mav)，加入中文標籤與日期格式
+        mpf.plot(
+            df, 
+            type='candle',        # 畫 K 線
+            volume=True,          # 顯示成交量
+            style=s,              # 套用中文與顏色樣式
+            title=title_text,     # 中文標題
+            ylabel="價格",        # 價格中文標籤
+            ylabel_lower="成交量", # 成交量中文標籤
+            datetime_format="%m/%d", # 日期格式改為 5/6 這樣的月/日
+            savefig=buf
+        )
+
+        # 5. 將圖片轉換並上傳至 ImgBB
         buf.seek(0)
         img_base64 = base64.b64encode(buf.read()).decode('utf-8')
         res = requests.post(
@@ -77,6 +115,7 @@ def generate_and_upload_chart(stock_id):
     except Exception as e:
         print(f"畫圖失敗: {e}")
         return None
+
 
 # --- 報價取得函式 ---
 def get_quote(msg):
