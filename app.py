@@ -43,7 +43,7 @@ try:
 except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
-# --- [修改] 核心畫圖函式 (全英文專業版，破解 Yahoo 時差 Bug) ---
+# --- [修改] 核心畫圖函式 (全英文專業版，破解 Yahoo 時差 Bug + 修復台股走勢) ---
 def generate_chart(stock_id, chart_type="K"):
     try:
         df = pd.DataFrame()
@@ -76,12 +76,19 @@ def generate_chart(stock_id, chart_type="K"):
                 dt_format = "%m/%d"
             else:
                 # 破解 Yahoo 時差 Bug：直接抓 5 天的資料，再手動切出「最後一天」
-                df = stock.history(period="5d", interval="1m")
+                # 修正 1：台股 1m 資料常壞掉，自動切換成 5m 比較穩！
+                req_interval = "5m" if stock_id.isdigit() else "1m"
+                df = stock.history(period="5d", interval=req_interval)
+                
                 if not df.empty:
-                    # 抓取這份資料中「最新的一天」的日期
-                    last_day = df.index[-1].date()
-                    # 魔法過濾：只保留跟「最新一天」相同的資料，剔除前四天
-                    df = df[df.index.date == last_day]
+                    # 修正 2：清掉 Yahoo 資料可能暗藏的空值 (NaN)，防止畫圖引擎崩潰
+                    df = df.dropna()
+                    
+                    if not df.empty:
+                        # 抓取這份資料中「最新的一天」的日期
+                        last_day = df.index[-1].date()
+                        # 魔法過濾：只保留跟「最新一天」相同的資料，剔除前四天
+                        df = df[df.index.date == last_day]
                     
                 plot_type = 'line'
                 title_suffix = "Intraday Trend"
