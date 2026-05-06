@@ -43,7 +43,7 @@ try:
 except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
-# --- [修改] 核心畫圖函式 (全英文專業版，避開方塊字與 Yahoo 阻擋) ---
+# --- [修改] 核心畫圖函式 (全英文專業版，破解 Yahoo 時差 Bug) ---
 def generate_chart(stock_id, chart_type="K"):
     try:
         df = pd.DataFrame()
@@ -64,7 +64,7 @@ def generate_chart(stock_id, chart_type="K"):
             dt_format = "%m/%d"
             
         else:
-            # 【美股 或 當日走勢圖】：使用 yfinance 並加上「偽裝面具」防封鎖
+            # 【美股 或 當日走勢圖】：使用 yfinance
             session = requests.Session()
             session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
             stock = yf.Ticker(ticker, session=session)
@@ -75,7 +75,14 @@ def generate_chart(stock_id, chart_type="K"):
                 title_suffix = "3-Month Chart"
                 dt_format = "%m/%d"
             else:
-                df = stock.history(period="1d", interval="1m")
+                # 破解 Yahoo 時差 Bug：直接抓 5 天的資料，再手動切出「最後一天」
+                df = stock.history(period="5d", interval="1m")
+                if not df.empty:
+                    # 抓取這份資料中「最新的一天」的日期
+                    last_day = df.index[-1].date()
+                    # 魔法過濾：只保留跟「最新一天」相同的資料，剔除前四天
+                    df = df[df.index.date == last_day]
+                    
                 plot_type = 'line'
                 title_suffix = "Intraday Trend"
                 dt_format = "%H:%M"
@@ -84,7 +91,7 @@ def generate_chart(stock_id, chart_type="K"):
             print(f"[{stock_id}] 抓不到資料")
             return None
 
-        # 🏆 設定全英文圖表標題 (不再依賴中文字型)
+        # 設定全英文圖表標題
         title_text = f"[{stock_id}] {title_suffix}"
 
         # --- 開始繪圖 ---
@@ -92,7 +99,7 @@ def generate_chart(stock_id, chart_type="K"):
         mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
         s = mpf.make_mpf_style(marketcolors=mc)
 
-        # 畫圖 (標籤全部改為英文 Price 與 Volume，避免亂碼)
+        # 畫圖
         mpf.plot(df, type=plot_type, volume=(chart_type=="K"), style=s, 
                  title=title_text, ylabel="Price", ylabel_lower="Volume",
                  datetime_format=dt_format, savefig=buf, show_nontrading=False)
@@ -232,23 +239,23 @@ def handle_message(event):
     # 1. 判斷是否為「看 K 線圖」指令
     if user_msg.startswith("K"):
         sid = user_msg.replace("K", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🖌️ 正在為您繪製 {sid} 的 K 線圖..."))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您繪製 {sid} 的 K 線圖..."))
         url = generate_chart(sid, "K")
         if url: 
             line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
         else:
-            line_bot_api.push_message(user_id, TextSendMessage(text="❌ 圖片產生失敗，可能是網路超載或查無此股票資料，請稍後再試。"))
+            line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗，可能是網路超載或查無此股票資料，請稍後再試。"))
         return
     
     # 2. 判斷是否為「看 走勢圖」指令
     if user_msg.startswith("走"):
         sid = user_msg.replace("走", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"📈 正在為您抓取 {sid} 即時走勢..."))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您抓取 {sid} 即時走勢..."))
         url = generate_chart(sid, "走")
         if url: 
             line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
         else:
-            line_bot_api.push_message(user_id, TextSendMessage(text="❌ 圖片產生失敗，請稍後再試。"))
+            line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗，請稍後再試。"))
         return
 
     # 3. 處理一般的報價查詢
@@ -257,8 +264,8 @@ def handle_message(event):
     if result and "找不到" not in result and "發生錯誤" not in result:
         # 報價成功，建立兩個魔法按鈕
         quick_reply = QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="📊 K 線圖", text=f"K{user_msg}")),
-            QuickReplyButton(action=MessageAction(label="📈 當日走勢", text=f"走{user_msg}"))
+            QuickReplyButton(action=MessageAction(label="K 線圖", text=f"K{user_msg}")),
+            QuickReplyButton(action=MessageAction(label="當日走勢", text=f"走{user_msg}"))
         ])
         # 回傳報價文字 + 按鈕
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
