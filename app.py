@@ -10,15 +10,13 @@ import time
 import pandas as pd
 import os  # 讀取雲端系統資訊必備
 
-# --- [新增] 畫圖所需套件 ---
+# --- 畫圖所需套件 ---
 import matplotlib
 matplotlib.use('Agg') # ⚠️非常重要：告訴 matplotlib 在無螢幕的環境背景畫圖
-import matplotlib as mpl
 import mplfinance as mpf
 import requests
 import base64
 import io
-import urllib.request
 
 app = Flask(__name__)
 
@@ -45,31 +43,14 @@ try:
 except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
-# --- [新增] 字型下載與設定 (強制修正方塊字) ---
-def setup_font():
-    font_path = "/tmp/TaipeiSansTCBeta-Regular.ttf"
-    if not os.path.exists(font_path):
-        urllib.request.urlretrieve("https://raw.githubusercontent.com/jonnykuo/Taipei-Sans-TC/master/TaipeiSansTCBeta-Regular.ttf", font_path)
-    mpl.font_manager.fontManager.addfont(font_path)
-    font_prop = mpl.font_manager.FontProperties(fname=font_path)
-    mpl.rcParams['font.family'] = font_prop.get_name()
-    mpl.rcParams['axes.unicode_minus'] = False
-
-# --- [新增] 核心畫圖函式 (支援 K線 與 走勢圖) ---
-# --- [升級版] 核心畫圖函式 (自動切換 FinMind 與偽裝 Yahoo) ---
+# --- [修改] 核心畫圖函式 (全英文專業版，避開方塊字與 Yahoo 阻擋) ---
 def generate_chart(stock_id, chart_type="K"):
     try:
-        setup_font()
-        
-        # 取得中文名稱
-        stock_name = tw_stock_dict.get(stock_id, "") if stock_id.isdigit() else ""
-        title_text = ""
-        
-        # --- 資料抓取邏輯 ---
         df = pd.DataFrame()
+        ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
         
         if stock_id.isdigit() and chart_type == "K":
-            # 【台股 K 線】：使用最穩定的 FinMind 繞過 Yahoo 阻擋
+            # 【台股 K 線】：使用 FinMind 繞過 Yahoo 阻擋
             start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime('%Y-%m-%d')
             df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
             if not df.empty:
@@ -79,44 +60,41 @@ def generate_chart(stock_id, chart_type="K"):
                 df.set_index('Date', inplace=True)
             
             plot_type = 'candle'
-            title_suffix = "三個月 K 線圖"
+            title_suffix = "3-Month Chart"
             dt_format = "%m/%d"
             
         else:
             # 【美股 或 當日走勢圖】：使用 yfinance 並加上「偽裝面具」防封鎖
             session = requests.Session()
             session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-            
-            ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
             stock = yf.Ticker(ticker, session=session)
             
             if chart_type == "K":
                 df = stock.history(period="3mo")
                 plot_type = 'candle'
-                title_suffix = "三個月 K 線圖"
+                title_suffix = "3-Month Chart"
                 dt_format = "%m/%d"
             else:
                 df = stock.history(period="1d", interval="1m")
                 plot_type = 'line'
-                title_suffix = "今日即時走勢圖"
+                title_suffix = "Intraday Trend"
                 dt_format = "%H:%M"
 
-        # 檢查是否真的沒抓到資料
         if df.empty: 
-            print(f"[{stock_id}] 抓不到歷史或走勢資料")
+            print(f"[{stock_id}] 抓不到資料")
             return None
 
-        # 設定圖表標題
-        title_text = f"{stock_name} ({stock_id}) {title_suffix}" if stock_name else f"{stock_id} {title_suffix}"
+        # 🏆 設定全英文圖表標題 (不再依賴中文字型)
+        title_text = f"[{stock_id}] {title_suffix}"
 
         # --- 開始繪圖 ---
         buf = io.BytesIO()
         mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
         s = mpf.make_mpf_style(marketcolors=mc)
 
-        # 畫圖 (如果是台股 K 線，由於 FinMind 假日不補值，用 show_nontrading=False 忽略假日斷層)
+        # 畫圖 (標籤全部改為英文 Price 與 Volume，避免亂碼)
         mpf.plot(df, type=plot_type, volume=(chart_type=="K"), style=s, 
-                 title=title_text, ylabel="價格", ylabel_lower="成交量",
+                 title=title_text, ylabel="Price", ylabel_lower="Volume",
                  datetime_format=dt_format, savefig=buf, show_nontrading=False)
 
         # --- 上傳至 ImgBB ---
@@ -254,23 +232,23 @@ def handle_message(event):
     # 1. 判斷是否為「看 K 線圖」指令
     if user_msg.startswith("K"):
         sid = user_msg.replace("K", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您繪製 {sid} 的 K 線圖..."))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🖌️ 正在為您繪製 {sid} 的 K 線圖..."))
         url = generate_chart(sid, "K")
         if url: 
             line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
         else:
-            line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗，可能是網路超載或查無此股票資料，請稍後再試。"))
+            line_bot_api.push_message(user_id, TextSendMessage(text="❌ 圖片產生失敗，可能是網路超載或查無此股票資料，請稍後再試。"))
         return
     
     # 2. 判斷是否為「看 走勢圖」指令
     if user_msg.startswith("走"):
         sid = user_msg.replace("走", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您抓取 {sid} 即時走勢..."))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"📈 正在為您抓取 {sid} 即時走勢..."))
         url = generate_chart(sid, "走")
         if url: 
             line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
         else:
-            line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗，請稍後再試。"))
+            line_bot_api.push_message(user_id, TextSendMessage(text="❌ 圖片產生失敗，請稍後再試。"))
         return
 
     # 3. 處理一般的報價查詢
@@ -279,8 +257,8 @@ def handle_message(event):
     if result and "找不到" not in result and "發生錯誤" not in result:
         # 報價成功，建立兩個魔法按鈕
         quick_reply = QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="K 線圖", text=f"K{user_msg}")),
-            QuickReplyButton(action=MessageAction(label="當日走勢", text=f"走{user_msg}"))
+            QuickReplyButton(action=MessageAction(label="📊 K 線圖", text=f"K{user_msg}")),
+            QuickReplyButton(action=MessageAction(label="📈 當日走勢", text=f"走{user_msg}"))
         ])
         # 回傳報價文字 + 按鈕
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
