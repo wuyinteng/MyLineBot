@@ -56,41 +56,70 @@ def setup_font():
     mpl.rcParams['axes.unicode_minus'] = False
 
 # --- [新增] 核心畫圖函式 (支援 K線 與 走勢圖) ---
+# --- [升級版] 核心畫圖函式 (自動切換 FinMind 與偽裝 Yahoo) ---
 def generate_chart(stock_id, chart_type="K"):
     try:
         setup_font()
-        ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
-        stock = yf.Ticker(ticker)
         
-        # 根據類型抓取不同資料
-        if chart_type == "K":
-            df = stock.history(period="3mo") # K線圖看3個月
+        # 取得中文名稱
+        stock_name = tw_stock_dict.get(stock_id, "") if stock_id.isdigit() else ""
+        title_text = ""
+        
+        # --- 資料抓取邏輯 ---
+        df = pd.DataFrame()
+        
+        if stock_id.isdigit() and chart_type == "K":
+            # 【台股 K 線】：使用最穩定的 FinMind 繞過 Yahoo 阻擋
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime('%Y-%m-%d')
+            df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
+            if not df.empty:
+                # 轉換欄位名稱，讓 mplfinance 看得懂
+                df = df.rename(columns={'date': 'Date', 'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'})
+                df['Date'] = pd.to_datetime(df['Date'])
+                df.set_index('Date', inplace=True)
+            
             plot_type = 'candle'
             title_suffix = "三個月 K 線圖"
             dt_format = "%m/%d"
+            
         else:
-            df = stock.history(period="1d", interval="1m") # 走勢圖看今天(1分鐘K)
-            plot_type = 'line'
-            title_suffix = "今日即時走勢圖"
-            dt_format = "%H:%M"
+            # 【美股 或 當日走勢圖】：使用 yfinance 並加上「偽裝面具」防封鎖
+            session = requests.Session()
+            session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+            
+            ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
+            stock = yf.Ticker(ticker, session=session)
+            
+            if chart_type == "K":
+                df = stock.history(period="3mo")
+                plot_type = 'candle'
+                title_suffix = "三個月 K 線圖"
+                dt_format = "%m/%d"
+            else:
+                df = stock.history(period="1d", interval="1m")
+                plot_type = 'line'
+                title_suffix = "今日即時走勢圖"
+                dt_format = "%H:%M"
 
+        # 檢查是否真的沒抓到資料
         if df.empty: 
+            print(f"[{stock_id}] 抓不到歷史或走勢資料")
             return None
 
-        # 取得中文名稱
-        stock_name = tw_stock_dict.get(stock_id, "") if stock_id.isdigit() else ""
+        # 設定圖表標題
         title_text = f"{stock_name} ({stock_id}) {title_suffix}" if stock_name else f"{stock_id} {title_suffix}"
 
-        # 畫圖
+        # --- 開始繪圖 ---
         buf = io.BytesIO()
         mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
         s = mpf.make_mpf_style(marketcolors=mc)
 
+        # 畫圖 (如果是台股 K 線，由於 FinMind 假日不補值，用 show_nontrading=False 忽略假日斷層)
         mpf.plot(df, type=plot_type, volume=(chart_type=="K"), style=s, 
                  title=title_text, ylabel="價格", ylabel_lower="成交量",
-                 datetime_format=dt_format, savefig=buf)
+                 datetime_format=dt_format, savefig=buf, show_nontrading=False)
 
-        # 將圖片轉換並上傳至 ImgBB
+        # --- 上傳至 ImgBB ---
         buf.seek(0)
         img_base64 = base64.b64encode(buf.read()).decode('utf-8')
         res = requests.post("https://api.imgbb.com/1/upload", data={"key": IMGBB_API_KEY, "image": img_base64})
@@ -98,6 +127,7 @@ def generate_chart(stock_id, chart_type="K"):
         if res.status_code == 200:
             return res.json()["data"]["url"]
         return None
+        
     except Exception as e:
         print(f"畫圖失敗: {e}")
         return None
