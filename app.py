@@ -12,11 +12,13 @@ import os  # 讀取雲端系統資訊必備
 
 # --- [新增] 畫圖所需套件 ---
 import matplotlib
-matplotlib.use('Agg') 
+matplotlib.use('Agg') # ⚠️非常重要：告訴 matplotlib 在無螢幕的環境背景畫圖
+import matplotlib as mpl
 import mplfinance as mpf
 import requests
 import base64
 import io
+import urllib.request
 
 app = Flask(__name__)
 
@@ -43,79 +45,62 @@ try:
 except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
-# --- [新增] 畫 K 線圖並上傳的專屬函式 ---
-import urllib.request
-import matplotlib as mpl
+# --- [新增] 字型下載與設定 (強制修正方塊字) ---
+def setup_font():
+    font_path = "/tmp/TaipeiSansTCBeta-Regular.ttf"
+    if not os.path.exists(font_path):
+        urllib.request.urlretrieve("https://raw.githubusercontent.com/jonnykuo/Taipei-Sans-TC/master/TaipeiSansTCBeta-Regular.ttf", font_path)
+    mpl.font_manager.fontManager.addfont(font_path)
+    font_prop = mpl.font_manager.FontProperties(fname=font_path)
+    mpl.rcParams['font.family'] = font_prop.get_name()
+    mpl.rcParams['axes.unicode_minus'] = False
 
-# --- [升級版] 畫 K 線圖並上傳的專屬函式 ---
-def generate_and_upload_chart(stock_id):
+# --- [新增] 核心畫圖函式 (支援 K線 與 走勢圖) ---
+def generate_chart(stock_id, chart_type="K"):
     try:
-        # 1. 抓取資料 (台股需要加上 .TW)
+        setup_font()
         ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
         stock = yf.Ticker(ticker)
-        df = stock.history(period="3mo")
-        if df.empty:
+        
+        # 根據類型抓取不同資料
+        if chart_type == "K":
+            df = stock.history(period="3mo") # K線圖看3個月
+            plot_type = 'candle'
+            title_suffix = "三個月 K 線圖"
+            dt_format = "%m/%d"
+        else:
+            df = stock.history(period="1d", interval="1m") # 走勢圖看今天(1分鐘K)
+            plot_type = 'line'
+            title_suffix = "今日即時走勢圖"
+            dt_format = "%H:%M"
+
+        if df.empty: 
             return None
 
-        # 2. 自動下載並設定開源中文字型 (避免雲端出現方塊字)
-        font_path = "TaipeiSansTCBeta-Regular.ttf"
-        if not os.path.exists(font_path):
-            print("正在下載中文字型...")
-            urllib.request.urlretrieve("https://raw.githubusercontent.com/jonnykuo/Taipei-Sans-TC/master/TaipeiSansTCBeta-Regular.ttf", font_path)
-        
-        # 將下載好的字型載入 Matplotlib
-        font_prop = mpl.font_manager.FontProperties(fname=font_path)
-        mpl.font_manager.fontManager.addfont(font_path)
-
-        # 3. 取得股票中文名稱 (如果是台股的話)
+        # 取得中文名稱
         stock_name = tw_stock_dict.get(stock_id, "") if stock_id.isdigit() else ""
-        title_text = f"{stock_name} ({stock_id}) 走勢圖" if stock_name else f"{stock_id} 走勢圖"
+        title_text = f"{stock_name} ({stock_id}) {title_suffix}" if stock_name else f"{stock_id} {title_suffix}"
 
-        # 4. 繪製純 K 線圖與成交量
+        # 畫圖
         buf = io.BytesIO()
-        mc = mpf.make_marketcolors(up='r', down='g', inherit=True) # 設定台股紅漲綠跌
-        
-        # 建立專屬樣式，並套用中文字型
-        s = mpf.make_mpf_style(
-            marketcolors=mc, 
-            rc={
-                'font.family': font_prop.get_name(), # 指定中文字型
-                'axes.unicode_minus': False          # 確保負號正常顯示
-            }
-        )
+        mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
+        s = mpf.make_mpf_style(marketcolors=mc)
 
-        # 執行畫圖：移除均線 (mav)，加入中文標籤與日期格式
-        mpf.plot(
-            df, 
-            type='candle',        # 畫 K 線
-            volume=True,          # 顯示成交量
-            style=s,              # 套用中文與顏色樣式
-            title=title_text,     # 中文標題
-            ylabel="價格",        # 價格中文標籤
-            ylabel_lower="成交量", # 成交量中文標籤
-            datetime_format="%m/%d", # 日期格式改為 5/6 這樣的月/日
-            savefig=buf
-        )
+        mpf.plot(df, type=plot_type, volume=(chart_type=="K"), style=s, 
+                 title=title_text, ylabel="價格", ylabel_lower="成交量",
+                 datetime_format=dt_format, savefig=buf)
 
-        # 5. 將圖片轉換並上傳至 ImgBB
+        # 將圖片轉換並上傳至 ImgBB
         buf.seek(0)
         img_base64 = base64.b64encode(buf.read()).decode('utf-8')
-        res = requests.post(
-            "https://api.imgbb.com/1/upload",
-            data={
-                "key": IMGBB_API_KEY,
-                "image": img_base64
-            }
-        )
+        res = requests.post("https://api.imgbb.com/1/upload", data={"key": IMGBB_API_KEY, "image": img_base64})
         
-        # 取得圖片網址
         if res.status_code == 200:
             return res.json()["data"]["url"]
         return None
     except Exception as e:
         print(f"畫圖失敗: {e}")
         return None
-
 
 # --- 報價取得函式 ---
 def get_quote(msg):
@@ -127,10 +112,7 @@ def get_quote(msg):
             stock_name = tw_stock_dict.get(msg, "")
             name_display = f"{stock_name} ({msg})" if stock_name else f"代碼：{msg}"
             
-            # 設定抓取過去 10 天的資料，確保有足夠的 K 棒
             start_date = (datetime.datetime.now() - datetime.timedelta(days=10)).strftime('%Y-%m-%d')
-            
-            # 使用 FinMind 抓取台股資料
             df = dl.taiwan_stock_daily(stock_id=msg, start_date=start_date)
             
             if df.empty:
@@ -215,10 +197,7 @@ def us_night_report():
 
 # --- 排程器設定 (Asia/Taipei) ---
 scheduler = BackgroundScheduler(timezone="Asia/Taipei")
-# 早上 08:00 美股收盤報價 (美股交易日對應台時間週二至週六)
 scheduler.add_job(us_market_closing_report, 'cron', day_of_week='mon-sat', hour=8, minute=0)
-
-# 台股盤前與美股開盤報價
 scheduler.add_job(daily_report, 'cron', day_of_week='mon-fri', hour=9, minute=1)
 scheduler.add_job(us_night_report, 'cron', day_of_week='mon-fri', hour=21, minute=31)
 scheduler.start()
@@ -236,58 +215,48 @@ def callback():
     except InvalidSignatureError: abort(400)
     return 'OK'
 
-# --- [優化] LINE 收到訊息的處理邏輯 (結合看圖按鈕) ---
+# --- [修改] LINE 收到訊息的處理邏輯 (結合雙按鈕) ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event): 
     user_msg = event.message.text.strip().upper()
-    user_id = event.source.user_id # 取出使用者 ID，準備稍後傳圖片用
+    user_id = event.source.user_id
 
-    # 狀況 A：如果訊息開頭是「圖」，代表使用者想看 K 線圖 (或點擊了快捷按鈕)
-    if user_msg.startswith("圖"):
-        stock_id = user_msg.replace("圖", "")
-        
-        # 1. 先用 reply_message 快速安撫使用者 (避免 LINE 等太久報錯)
-        line_bot_api.reply_message(
-            event.reply_token, 
-            TextSendMessage(text=f"正在為您繪製 {stock_id} 的專業 K 線圖，請稍候幾秒鐘...")
-        )
-        
-        # 2. 開始在背景畫圖並上傳到 ImgBB
-        img_url = generate_and_upload_chart(stock_id)
-        
-        # 3. 畫完之後，用 push_message 主動推播圖片過去
-        if img_url:
-            line_bot_api.push_message(
-                user_id, 
-                ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)
-            )
+    # 1. 判斷是否為「看 K 線圖」指令
+    if user_msg.startswith("K"):
+        sid = user_msg.replace("K", "")
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您繪製 {sid} 的 K 線圖..."))
+        url = generate_chart(sid, "K")
+        if url: 
+            line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
         else:
-            line_bot_api.push_message(
-                user_id, 
-                TextSendMessage(text="圖片產生失敗，可能是網路超載或查無此股票資料，請稍後再試。")
-            )
+            line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗，可能是網路超載或查無此股票資料，請稍後再試。"))
+        return
+    
+    # 2. 判斷是否為「看 走勢圖」指令
+    if user_msg.startswith("走"):
+        sid = user_msg.replace("走", "")
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您抓取 {sid} 即時走勢..."))
+        url = generate_chart(sid, "走")
+        if url: 
+            line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
+        else:
+            line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗，請稍後再試。"))
         return
 
-    # 狀況 B：一般的文字報價查詢
+    # 3. 處理一般的報價查詢
     result = get_quote(user_msg)
     
     if result and "找不到" not in result and "發生錯誤" not in result:
-        # 如果報價成功，建立一個「看 K 線圖」的魔法按鈕
+        # 報價成功，建立兩個魔法按鈕
         quick_reply = QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="看 K 線圖", text=f"圖{user_msg}"))
+            QuickReplyButton(action=MessageAction(label="K 線圖", text=f"K{user_msg}")),
+            QuickReplyButton(action=MessageAction(label="當日走勢", text=f"走{user_msg}"))
         ])
-        
-        # 回傳報價文字 + 魔法按鈕
-        line_bot_api.reply_message(
-            event.reply_token, 
-            TextSendMessage(text=result, quick_reply=quick_reply)
-        )
+        # 回傳報價文字 + 按鈕
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
     else:
-        # 如果報價失敗或查無代號，就只回傳純文字
-        line_bot_api.reply_message(
-            event.reply_token, 
-            TextSendMessage(text=result if result else "請輸入正確的股票代號查詢 (例如: 2330 或 AAPL)")
-        )
+        # 報價失敗或查無代號，只回傳純文字
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入正確的股票代號查詢 (例如: 2330 或 AAPL)"))
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
