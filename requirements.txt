@@ -9,4 +9,6 @@ requests
 mediapipe
 opencv-python-headless
 numpy
+pandas
 gunicorn
+tqdm
