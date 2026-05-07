@@ -6,8 +6,8 @@ apscheduler
 matplotlib
 mplfinance
 requests
-opencv-python-headless
-mediapipe
+google-generativeai
+Pillow
 protobuf==3.20.3
 numpy
 gunicorn

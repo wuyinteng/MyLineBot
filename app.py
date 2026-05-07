@@ -15,19 +15,27 @@ import mplfinance as mpf
 import requests
 import base64
 import io
-import cv2
-import numpy as np
+
+# --- [新增] 外包大腦：Google Gemini 套件 ---
+import google.generativeai as genai
+from PIL import Image
 
 app = Flask(__name__)
 
-# --- 1. 您的庫存設定 (請自行修改成本) ---
+# --- 1. 您的庫存設定 (請自行修改) ---
 my_holdings = {
-    '2330': [600.0, 1000],  # 格式：'代號': [買進價格, 股數]
+    '2330': [600.0, 1000],  
     '2317': [100.5, 2000],
     'NVDA': [120.0, 10]
 }
 
-# --- 基礎設定 ---
+# --- 2. [關鍵] Gemini API 金鑰設定 ---
+GEMINI_API_KEY = "AIzaSyBO1V-8lCqXpL2XqfkR3E1gF354jJ_4z7Y" 
+genai.configure(api_key=GEMINI_API_KEY)
+# 使用最快速的視覺模型
+vision_model = genai.GenerativeModel('gemini-1.5-flash')
+
+# --- 3. 基礎設定 ---
 IMGBB_API_KEY = "4bc61e9d363f21433c906beb7440dd92"
 dl = DataLoader()
 dl.login_by_token(api_token='eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoid3V5aW50ZW5nIiwiZW1haWwiOiJ3dXlpbnRlbmcxMjA2QGdtYWlsLmNvbSJ9.3-HFSvEh15UnzB4Nt_TZUYLCF7OSjrDuB31fwZ1foJA')
@@ -44,7 +52,7 @@ except: pass
 
 # --- 損益計算報告 ---
 def get_portfolio_status():
-    report = " 【即時損益報告】\n------------------\n"
+    report = "【即時損益報告】\n------------------\n"
     total_cost, total_mkt = 0, 0
     for sid, info in my_holdings.items():
         buy_p, qty = info
@@ -59,53 +67,39 @@ def get_portfolio_status():
             name = tw_stock_dict.get(sid, sid)
             report += f"{icon} {name}\n現價:{curr_p:.2f} ({profit_pct:+.2f}%)\n\n"
         except: report += f" {sid} 抓取失敗\n"
-    
     if total_cost > 0:
         total_ret = ((total_mkt - total_cost) / total_cost) * 100
         report += f"------------------\n 總回報率：{total_ret:+.2f}%"
     return report
 
-# --- [關鍵] 照片手勢處理 (放在裡面，用完就丟，省記憶體防當機) ---
+# --- [全新] Gemini 判讀照片指令 ---
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     try:
-        # 下載並轉換圖片
+        # 1. 下載 LINE 照片
         msg_content = line_bot_api.get_message_content(event.message.id)
         img_bytes = b"".join([chunk for chunk in msg_content.iter_content()])
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # 在這裡才「臨時」呼叫 AI 模組
-        import mediapipe as mp
-        mp_hands = mp.solutions.hands
+        # 2. 將照片轉給 Gemini 看
+        img = Image.open(io.BytesIO(img_bytes))
+        prompt = "這張照片裡有一隻手。請問這隻手伸直了幾根手指頭？請只回答我一個阿拉伯數字（例如：1, 2, 3, 4, 5）。如果沒有手或看不清楚，請回答 0。"
         
-        with mp_hands.Hands(static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5) as hands_engine:
-            results = hands_engine.process(img_rgb)
-            
-            if results.multi_hand_landmarks:
-                landmarks = results.multi_hand_landmarks[0].landmark
-                fingers = []
-                if landmarks[4].x < landmarks[3].x: fingers.append(1) # 拇指
-                for tip in [8, 12, 16, 20]: # 其他四指
-                    if landmarks[tip].y < landmarks[tip - 2].y: fingers.append(1)
-                
-                count = len(fingers)
-                
-                if count == 1:
-                    res_text = get_portfolio_status()
-                elif 2 <= count <= 5:
-                    res_text = f"偵測到數字 {count}：此功能目前尚未設定。"
-                else:
-                    res_text = "看到手掌了，但沒比出清楚的數字。"
-            else:
-                res_text = "沒抓到手勢，請對準鏡頭拍照。"
+        response = vision_model.generate_content([prompt, img])
+        result_text = response.text.strip()
+        
+        # 3. 根據 Gemini 回報的數字執行指令
+        if "1" in result_text:
+            res_text = get_portfolio_status()
+        elif result_text in ["2", "3", "4", "5"]:
+            res_text = f"偵測到數字 {result_text}：此功能目前尚未設定。"
+        else:
+            res_text = "Gemini 說看不清楚手勢，請重拍一張喔！"
 
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=res_text))
         
     except Exception as e:
         print(f"辨識出錯: {e}")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統過載或發生錯誤，請稍後再拍！"))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"AI 連線異常，請稍後再試！"))
 
 # --- 核心畫圖函式 ---
 def generate_chart(stock_id, chart_type="K"):
