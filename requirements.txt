@@ -9,3 +9,4 @@ requests
 mediapipe
 opencv-python-headless
 numpy
+gunicorn
