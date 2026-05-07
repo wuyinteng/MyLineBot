@@ -1,5 +1,5 @@
 flask
-line-bot-sdk==1.12.1
+line-bot-sdk
 yfinance
 FinMind
 apscheduler
@@ -8,7 +8,7 @@ mplfinance
 requests
 google-generativeai
 Pillow
-protobuf==3.20.3
+protobuf
 numpy
 gunicorn
 tqdm

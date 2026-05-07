@@ -15,6 +15,7 @@ import mplfinance as mpf
 import requests
 import base64
 import io
+import traceback
 
 # --- [新增] 外包大腦：Google Gemini 套件 ---
 import google.generativeai as genai
@@ -98,8 +99,8 @@ def handle_image(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=res_text))
         
     except Exception as e:
-        print(f"辨識出錯: {e}")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"AI 連線異常，請稍後再試！"))
+        print(f"辨識出錯：{e}")
+        print(traceback.format_exc())  # 👈 印出完整的錯誤追蹤路徑
 
 # --- 核心畫圖函式 ---
 def generate_chart(stock_id, chart_type="K"):
