@@ -1,32 +1,29 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage, QuickReply, QuickReplyButton, MessageAction
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage, QuickReply, QuickReplyButton, MessageAction, ImageMessage
 import yfinance as yf
 from FinMind.data import DataLoader
 import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 import time
 import pandas as pd
-import os  # 讀取雲端系統資訊必備
-
-# --- 畫圖所需套件 ---
+import os
 import matplotlib
-matplotlib.use('Agg') # ⚠️非常重要：告訴 matplotlib 在無螢幕的環境背景畫圖
+matplotlib.use('Agg')
 import mplfinance as mpf
 import requests
 import base64
 import io
 
-app = Flask(__name__)
-
+# --- [新增] AI 辨識套件 ---
 import mediapipe as mp
 import cv2
 import numpy as np
-from linebot.models import MessageEvent, ImageMessage, TextSendMessage
+
+app = Flask(__name__)
 
 # --- 1. 定義您的庫存資料 (請在此修改您的買進成本) ---
-# 格式：'代號': [買進價格, 持股數量]
 my_holdings = {
     '2330': [600.0, 1000],  # 台積電：買在 600 元，1張
     '2317': [100.5, 2000],  # 鴻海：買在 100.5 元，2張
@@ -46,126 +43,20 @@ handler = WebhookHandler('6394456d4596cc6aadb9c92dda96b296')
 
 MY_USER_ID = 'U288dc1f88aabee28ca0342d542b8040f'
 
-# --- 建立台股名稱字典 (啟動時執行一次，加快查詢速度) ---
+# --- [新增] 初始化 AI 手勢辨識模型 ---
+mp_hands = mp.solutions.hands
+hands_engine = mp_hands.Hands(static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5)
+
+# --- 建立台股名稱字典 ---
 tw_stock_dict = {}
 try:
-    print("正在從 FinMind 載入台股清單以優化名稱查詢...")
+    print("正在從 FinMind 載入台股清單...")
     df_info = dl.taiwan_stock_info()
     tw_stock_dict = dict(zip(df_info['stock_id'], df_info['stock_name']))
-    print(f"成功載入 {len(tw_stock_dict)} 檔股票名稱！")
 except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
-# --- [修改] 核心畫圖函式 (終極防護版：解決走勢圖畫不出來的問題) ---
-def generate_chart(stock_id, chart_type="K"):
-    try:
-        df = pd.DataFrame()
-        ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
-        
-        if stock_id.isdigit() and chart_type == "K":
-            # 【台股 K 線】：使用 FinMind 繞過 Yahoo 阻擋
-            start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime('%Y-%m-%d')
-            df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
-            if not df.empty:
-                df = df.rename(columns={'date': 'Date', 'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'})
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.set_index('Date', inplace=True)
-            
-            plot_type = 'candle'
-            title_suffix = "3-Month Chart"
-            dt_format = "%m/%d"
-            
-        else:
-            # 【美股 或 當日走勢圖】：使用 yfinance原生連線 (移除自訂 session 避免衝突)
-            stock = yf.Ticker(ticker)
-            
-            if chart_type == "K":
-                df = stock.history(period="3mo")
-                plot_type = 'candle'
-                title_suffix = "3-Month Chart"
-                dt_format = "%m/%d"
-            else:
-                # 【當日走勢圖專屬邏輯】
-                req_interval = "5m" if stock_id.isdigit() else "1m"
-                
-                # 策略：抓 5 天資料確保不漏接
-                df = stock.history(period="5d", interval=req_interval)
-                
-                if not df.empty:
-                    df = df.dropna()  # 清除殘缺空值
-                    
-                if not df.empty and len(df) >= 2:
-                    # ⚠️ 關鍵修復 1：拔除 yfinance 帶來的時區，防止 mplfinance 畫圖崩潰
-                    df.index = df.index.tz_localize(None)
-                    
-                    # ⚠️ 關鍵修復 2：精準只抓最後一天的資料
-                    last_day = df.index[-1].date()
-                    df = df[df.index.date == last_day]
-                    
-                plot_type = 'line'
-                title_suffix = "Intraday Trend"
-                dt_format = "%H:%M"
-
-        # ⚠️ 關鍵修復 3：雙重檢查，如果資料少於 2 筆，絕對不能畫圖 (會當機)，直接擋下
-        if df.empty or len(df) < 2: 
-            print(f"[{stock_id}] 當日走勢資料不足或 API 阻擋，無法繪圖")
-            return None
-
-        # 設定全英文圖表標題
-        title_text = f"[{stock_id}] {title_suffix}"
-
-        # --- 開始繪圖 ---
-        buf = io.BytesIO()
-        mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
-        s = mpf.make_mpf_style(marketcolors=mc)
-
-        # 畫圖
-        mpf.plot(df, type=plot_type, volume=(chart_type=="K"), style=s, 
-                 title=title_text, ylabel="Price", ylabel_lower="Volume",
-                 datetime_format=dt_format, savefig=buf, show_nontrading=False)
-
-        # --- 上傳至 ImgBB ---
-        buf.seek(0)
-        img_base64 = base64.b64encode(buf.read()).decode('utf-8')
-        res = requests.post("https://api.imgbb.com/1/upload", data={"key": IMGBB_API_KEY, "image": img_base64})
-        
-        if res.status_code == 200:
-            return res.json()["data"]["url"]
-        return None
-        
-    except Exception as e:
-        import traceback
-        print(f"畫圖發生嚴重錯誤: {e}")
-        print(traceback.format_exc()) # 印出詳細錯誤方便未來抓蟲
-        return None
-
-
-        # 設定全英文圖表標題
-        title_text = f"[{stock_id}] {title_suffix}"
-
-        # --- 開始繪圖 ---
-        buf = io.BytesIO()
-        mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
-        s = mpf.make_mpf_style(marketcolors=mc)
-
-        # 畫圖
-        mpf.plot(df, type=plot_type, volume=(chart_type=="K"), style=s, 
-                 title=title_text, ylabel="Price", ylabel_lower="Volume",
-                 datetime_format=dt_format, savefig=buf, show_nontrading=False)
-
-        # --- 上傳至 ImgBB ---
-        buf.seek(0)
-        img_base64 = base64.b64encode(buf.read()).decode('utf-8')
-        res = requests.post("https://api.imgbb.com/1/upload", data={"key": IMGBB_API_KEY, "image": img_base64})
-        
-        if res.status_code == 200:
-            return res.json()["data"]["url"]
-        return None
-        
-    except Exception as e:
-        print(f"畫圖失敗: {e}")
-        return None
-
+# --- [新增] 損益計算函式 ---
 def get_portfolio_status():
     report = "【即時庫存損益報告】\n"
     report += "------------------------\n"
@@ -174,13 +65,11 @@ def get_portfolio_status():
     
     for stock_id, info in my_holdings.items():
         buy_price, amount = info
-        # 判斷台股或美股
         ticker_id = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
         try:
             stock = yf.Ticker(ticker_id)
             current_price = stock.fast_info['last_price']
             
-            # 計算單檔損益
             cost = buy_price * amount
             mkt_val = current_price * amount
             profit = mkt_val - cost
@@ -189,101 +78,148 @@ def get_portfolio_status():
             total_cost += cost
             total_market_value += mkt_val
             
-            # 格式化輸出
             icon = "🔺" if profit >= 0 else "🔻"
-            name = tw_stock_dict.get(stock_id, stock_id) # 拿我們之前做的中文名稱字典
-            report += f"{icon} {name}\n現價: {current_price:.2f} ({profit_pct:+.2f}%)\n"
+            name = tw_stock_dict.get(stock_id, stock_id)
+            report += f"{icon} {name}\n現價: {current_price:.2f} ({profit_pct:+.2f}%)\n\n"
         except:
             report += f"{stock_id} 資料抓取失敗\n"
             
-    # 總結
     total_profit_pct = ((total_market_value - total_cost) / total_cost) * 100
     report += "------------------------\n"
-    report += f"總預估損益：{total_profit_pct:+.2f}%"
+    report += f"總預估回報率：{total_profit_pct:+.2f}%"
     return report
 
-# --- 3. 照片判讀與指令分配 ---
+# --- [新增] 照片手勢處理邏輯 ---
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
-    
-    # 假設辨識出的手指數量為 count
-    if count == 1:
-        # 指令 1：庫存損益
-        result_msg = get_portfolio_status()
-    elif count == 2:
-        result_msg = "指令 2：(目前尚未設定功能)"
-    elif count == 3:
-        result_msg = "指令 3：(目前尚未設定功能)"
-    elif count == 4:
-        result_msg = "指令 4：(目前尚未設定功能)"
-    elif count == 5:
-        result_msg = "指令 5：(目前尚未設定功能)"
-    else:
-        result_msg = f"偵測到手勢 {count}，尚未定義指令。"
+    try:
+        # 1. 下載照片
+        message_content = line_bot_api.get_message_content(event.message.id)
+        image_bytes = b"".join([chunk for chunk in message_content.iter_content()])
+        
+        # 2. 轉為 AI 格式
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # 3. AI 判讀手勢
+        results = hands_engine.process(img_rgb)
+        
+        if results.multi_hand_landmarks:
+            landmarks = results.multi_hand_landmarks[0].landmark
+            fingers = []
+            # 判斷手指伸直邏輯 (y座標 tip < joint)
+            if landmarks[4].x < landmarks[3].x: fingers.append(1) # 拇指
+            for tip_id in [8, 12, 16, 20]:
+                if landmarks[tip_id].y < landmarks[tip_id - 2].y:
+                    fingers.append(1)
+            
+            count = len(fingers)
+            
+            # 4. 指令分配
+            if count == 1:
+                result_msg = get_portfolio_status()
+            elif 2 <= count <= 5:
+                result_msg = f"偵測到手勢 {count}：(功能開發中...)"
+            else:
+                result_msg = "偵測到手勢，但手指數量無法辨識。"
+        else:
+            result_msg = "沒看到清楚的手掌，請正對鏡頭拍一次。"
 
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result_msg))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result_msg))
+    except Exception as e:
+        print(f"照片辨識錯誤: {e}")
 
-# --- 報價取得函式 ---
+# --- 核心畫圖函式 (維持不變) ---
+def generate_chart(stock_id, chart_type="K"):
+    try:
+        df = pd.DataFrame()
+        ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
+        if stock_id.isdigit() and chart_type == "K":
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=100)).strftime('%Y-%m-%d')
+            df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
+            if not df.empty:
+                df = df.rename(columns={'date': 'Date', 'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'})
+                df['Date'] = pd.to_datetime(df['Date'])
+                df.set_index('Date', inplace=True)
+            plot_type = 'candle'
+            title_suffix = "3-Month Chart"
+            dt_format = "%m/%d"
+        else:
+            stock = yf.Ticker(ticker)
+            if chart_type == "K":
+                df = stock.history(period="3mo")
+                plot_type = 'candle'
+                title_suffix = "3-Month Chart"
+                dt_format = "%m/%d"
+            else:
+                req_interval = "5m" if stock_id.isdigit() else "1m"
+                df = stock.history(period="5d", interval=req_interval)
+                if not df.empty:
+                    df = df.dropna()
+                if not df.empty and len(df) >= 2:
+                    df.index = df.index.tz_localize(None)
+                    last_day = df.index[-1].date()
+                    df = df[df.index.date == last_day]
+                plot_type = 'line'
+                title_suffix = "Intraday Trend"
+                dt_format = "%H:%M"
+        if df.empty or len(df) < 2: return None
+        title_text = f"[{stock_id}] {title_suffix}"
+        buf = io.BytesIO()
+        mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
+        s = mpf.make_mpf_style(marketcolors=mc)
+        mpf.plot(df, type=plot_type, volume=(chart_type=="K"), style=s, title=title_text, ylabel="Price", ylabel_lower="Volume", datetime_format=dt_format, savefig=buf, show_nontrading=False)
+        buf.seek(0)
+        img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        res = requests.post("https://api.imgbb.com/1/upload", data={"key": IMGBB_API_KEY, "image": img_base64})
+        if res.status_code == 200: return res.json()["data"]["url"]
+        return None
+    except Exception as e:
+        return None
+
+# --- 報價取得函式 (維持不變) ---
 def get_quote(msg):
     msg = msg.upper().strip()
-    
-    # 1. 台股報價邏輯 (改用 FinMind，繞過 Yahoo 阻擋)
     if msg.isdigit() and len(msg) >= 4:
         try:
             stock_name = tw_stock_dict.get(msg, "")
             name_display = f"{stock_name} ({msg})" if stock_name else f"代碼：{msg}"
-            
             start_date = (datetime.datetime.now() - datetime.timedelta(days=10)).strftime('%Y-%m-%d')
             df = dl.taiwan_stock_daily(stock_id=msg, start_date=start_date)
-            
-            if df.empty:
-                return f"找不到台股【{name_display}】資料"
-                
+            if df.empty: return f"找不到台股【{name_display}】資料"
             if len(df) >= 2:
                 tc, to, pc = df['close'].iloc[-1], df['open'].iloc[-1], df['close'].iloc[-2]
                 dp, pp = tc - pc, (tc - pc) / pc * 100
                 do, po = tc - to, (tc - to) / to * 100
                 sp = "🔺" if dp > 0 else ("🔻" if dp < 0 else "➖")
                 so = "🔺" if do > 0 else ("🔻" if do < 0 else "➖")
-                
                 return (f"【台股】{name_display}\n目前價格：{tc:.2f} TWD\n---\n"
                         f"前日收盤：{pc:.2f} TWD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
                         f"今日開盤：{to:.2f} TWD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
-            else:
-                return f"【{name_display}】歷史資料筆數不足，無法計算。"
-        except Exception as e:
-            return f"查詢台股 {msg} 發生錯誤：{str(e)}"
-
-    # 2. 美股報價邏輯 (維持使用 yfinance)
+            else: return f"【{name_display}】歷史資料筆數不足。"
+        except Exception as e: return f"查詢台股 {msg} 錯誤：{str(e)}"
     elif msg.isalpha() and 1 <= len(msg) <= 5:
         try:
             stock = yf.Ticker(msg)
-            df = stock.history(period='1mo') 
-            
-            if df.empty:
-                return f"找不到美股【{msg}】資料"
-                
+            df = stock.history(period='1mo')
+            if df.empty: return f"找不到美股【{msg}】資料"
             if len(df) >= 2:
                 try: comp_name = stock.info.get('shortName', msg)
                 except: comp_name = msg
-                
                 tc, to, pc = df['Close'].iloc[-1], df['Open'].iloc[-1], df['Close'].iloc[-2]
                 dp, pp = tc - pc, (tc - pc) / pc * 100
                 do, po = tc - to, (tc - to) / to * 100
                 sp = "🔺" if dp > 0 else ("🔻" if dp < 0 else "➖")
                 so = "🔺" if do > 0 else ("🔻" if do < 0 else "➖")
-                
                 return (f"【美股】{comp_name} ({msg})\n目前價格：${tc:.2f} USD\n---\n"
                         f"前日收盤：${pc:.2f} USD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
                         f"今日開盤：${to:.2f} USD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
-            else:
-                return f"【{msg}】歷史資料筆數不足，無法計算。"
-        except Exception as e:
-            return f"查詢美股 {msg} 發生錯誤：{str(e)}"
-            
+            else: return f"【{msg}】歷史資料筆數不足。"
+        except Exception as e: return f"查詢美股 {msg} 錯誤：{str(e)}"
     return None
 
-# --- 美股四大指數報價 (早上 08:00) ---
+# --- 定時報告與排程 (維持不變) ---
 def us_market_closing_report():
     indices = {"^DJI": "道瓊工業", "^GSPC": "標普 500", "^IXIC": "那斯達克", "^SOX": "費城半導體"}
     results = []
@@ -301,7 +237,6 @@ def us_market_closing_report():
         report = "🇺🇸 美股收盤綜合報價：\n\n" + "\n---\n".join(results)
         line_bot_api.push_message(MY_USER_ID, TextSendMessage(text=report))
 
-# --- 其他定時任務 ---
 def daily_report():
     targets = ["2330", "2308", "2454", "3711", "2408"] 
     results = [get_quote(t) for t in targets if get_quote(t)]
@@ -316,17 +251,14 @@ def us_night_report():
         report = "美股開盤即時報價：\n\n" + "\n---\n".join(results)
         line_bot_api.push_message(MY_USER_ID, TextSendMessage(text=report))
 
-# --- 排程器設定 (Asia/Taipei) ---
 scheduler = BackgroundScheduler(timezone="Asia/Taipei")
 scheduler.add_job(us_market_closing_report, 'cron', day_of_week='mon-sat', hour=8, minute=0)
 scheduler.add_job(daily_report, 'cron', day_of_week='mon-fri', hour=9, minute=1)
 scheduler.add_job(us_night_report, 'cron', day_of_week='mon-fri', hour=21, minute=31)
 scheduler.start()
 
-# --- 基礎路由 (防休眠敲門用) ---
 @app.route("/", methods=['GET'])
-def index():
-    return "Bot is running!"
+def index(): return "Bot is running!"
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -336,48 +268,33 @@ def callback():
     except InvalidSignatureError: abort(400)
     return 'OK'
 
-# --- [修改] LINE 收到訊息的處理邏輯 (結合雙按鈕) ---
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event): 
     user_msg = event.message.text.strip().upper()
     user_id = event.source.user_id
-
-    # 1. 判斷是否為「看 K 線圖」指令
     if user_msg.startswith("K"):
         sid = user_msg.replace("K", "")
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您繪製 {sid} 的 K 線圖..."))
         url = generate_chart(sid, "K")
-        if url: 
-            line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
-        else:
-            line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗，可能是網路超載或查無此股票資料，請稍後再試。"))
+        if url: line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
+        else: line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗。"))
         return
-    
-    # 2. 判斷是否為「看 走勢圖」指令
     if user_msg.startswith("走"):
         sid = user_msg.replace("走", "")
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您抓取 {sid} 即時走勢..."))
         url = generate_chart(sid, "走")
-        if url: 
-            line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
-        else:
-            line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗，請稍後再試。"))
+        if url: line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
+        else: line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗。"))
         return
-
-    # 3. 處理一般的報價查詢
     result = get_quote(user_msg)
-    
     if result and "找不到" not in result and "發生錯誤" not in result:
-        # 報價成功，建立兩個魔法按鈕
         quick_reply = QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="K 線圖", text=f"K{user_msg}")),
             QuickReplyButton(action=MessageAction(label="當日走勢", text=f"走{user_msg}"))
         ])
-        # 回傳報價文字 + 按鈕
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
     else:
-        # 報價失敗或查無代號，只回傳純文字
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入正確的股票代號查詢 (例如: 2330 或 AAPL)"))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入代號查詢"))
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
