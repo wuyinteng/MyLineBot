@@ -15,122 +15,99 @@ import mplfinance as mpf
 import requests
 import base64
 import io
-
-# --- [新增] AI 辨識套件 ---
-import mediapipe as mp
 import cv2
 import numpy as np
 
 app = Flask(__name__)
 
-# --- 1. 定義您的庫存資料 (請在此修改您的買進成本) ---
+# --- 1. 您的庫存設定 (請自行修改成本) ---
 my_holdings = {
-    '2330': [600.0, 1000],  # 台積電：買在 600 元，1張
-    '2317': [100.5, 2000],  # 鴻海：買在 100.5 元，2張
-    'NVDA': [120.0, 10]     # 美股輝達：買在 120 元，10股
+    '2330': [600.0, 1000],  # 格式：'代號': [買進價格, 股數]
+    '2317': [100.5, 2000],
+    'NVDA': [120.0, 10]
 }
 
-# --- ImgBB API 金鑰 ---
+# --- 基礎設定 ---
 IMGBB_API_KEY = "4bc61e9d363f21433c906beb7440dd92"
-
-# --- FinMind 伺服器登入 ---
 dl = DataLoader()
 dl.login_by_token(api_token='eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoid3V5aW50ZW5nIiwiZW1haWwiOiJ3dXlpbnRlbmcxMjA2QGdtYWlsLmNvbSJ9.3-HFSvEh15UnzB4Nt_TZUYLCF7OSjrDuB31fwZ1foJA')
-
-# --- LINE Bot 金鑰設定 ---
 line_bot_api = LineBotApi('0PkQu4ePT9fMFke5+i/e6A1cxm7dD4Nt04K47Uq7Pxy5vIUxKnIzaYUCBcNGJ1Y/RWscQlvRknxmtdioggR+rI LSsd28GBtd1lbDcvPgv1UkrIcrrDEOgHZNgQl1b6HH8mRpvvDLUBzPH4FVOnOGwAdB04t89/1O/w1cDnyilFU=')
 handler = WebhookHandler('6394456d4596cc6aadb9c92dda96b296')
-
 MY_USER_ID = 'U288dc1f88aabee28ca0342d542b8040f'
-
-# --- [新增] 初始化 AI 手勢辨識模型 ---
-mp_hands = mp.solutions.hands
-hands_engine = mp_hands.Hands(static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5)
 
 # --- 建立台股名稱字典 ---
 tw_stock_dict = {}
 try:
-    print("正在從 FinMind 載入台股清單...")
     df_info = dl.taiwan_stock_info()
     tw_stock_dict = dict(zip(df_info['stock_id'], df_info['stock_name']))
-except Exception as e:
-    print(f"台股清單載入失敗: {e}")
+except: pass
 
-# --- [新增] 損益計算函式 ---
+# --- 損益計算報告 ---
 def get_portfolio_status():
-    report = "📊 【個人即時損益報告】\n"
-    report += "------------------------\n"
-    total_cost = 0
-    total_market_value = 0
-    
-    for stock_id, info in my_holdings.items():
-        buy_price, amount = info
-        ticker_id = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
+    report = " 【即時損益報告】\n------------------\n"
+    total_cost, total_mkt = 0, 0
+    for sid, info in my_holdings.items():
+        buy_p, qty = info
+        ticker = f"{sid}.TW" if sid.isdigit() else sid
         try:
-            stock = yf.Ticker(ticker_id)
-            current_price = stock.fast_info['last_price']
-            cost = buy_price * amount
-            mkt_val = current_price * amount
-            profit = mkt_val - cost
-            profit_pct = (profit / cost) * 100
-            total_cost += cost
-            total_market_value += mkt_val
-            
-            icon = "🔺" if profit >= 0 else "🔻"
-            name = tw_stock_dict.get(stock_id, stock_id)
-            report += f"{icon} {name}\n現價: {current_price:.2f} ({profit_pct:+.2f}%)\n\n"
-        except:
-            report += f"{stock_id} 抓取失敗\n"
-            
-    total_ret = ((total_market_value - total_cost) / total_cost) * 100
-    report += "------------------------\n"
-    report += f"總預估損益：{total_ret:+.2f}%"
+            s = yf.Ticker(ticker)
+            curr_p = s.fast_info['last_price']
+            profit_pct = (curr_p - buy_p) / buy_p * 100
+            total_cost += buy_p * qty
+            total_mkt += curr_p * qty
+            icon = "🔺" if curr_p >= buy_p else "🔻"
+            name = tw_stock_dict.get(sid, sid)
+            report += f"{icon} {name}\n現價:{curr_p:.2f} ({profit_pct:+.2f}%)\n\n"
+        except: report += f" {sid} 抓取失敗\n"
+    
+    if total_cost > 0:
+        total_ret = ((total_mkt - total_cost) / total_cost) * 100
+        report += f"------------------\n 總回報率：{total_ret:+.2f}%"
     return report
 
-# --- [完整修復] 照片辨識邏輯 ---
+# --- [關鍵] 照片手勢處理 (放在裡面，用完就丟，省記憶體防當機) ---
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     try:
-        # 1. 下載 LINE 照片
-        message_content = line_bot_api.get_message_content(event.message.id)
-        image_bytes = b"".join([chunk for chunk in message_content.iter_content()])
-        
-        # 2. 轉換為 AI 格式
-        nparr = np.frombuffer(image_bytes, np.uint8)
+        # 下載並轉換圖片
+        msg_content = line_bot_api.get_message_content(event.message.id)
+        img_bytes = b"".join([chunk for chunk in msg_content.iter_content()])
+        nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # 3. 執行 AI 辨識
-        results = hands_engine.process(img_rgb)
+        # 在這裡才「臨時」呼叫 AI 模組
+        import mediapipe as mp
+        mp_hands = mp.solutions.hands
         
-        if results.multi_hand_landmarks:
-            # 數手指邏輯
-            landmarks = results.multi_hand_landmarks[0].landmark
-            fingers = []
-            # 拇指 (簡易判斷：x座標比較)
-            if landmarks[4].x < landmarks[3].x: fingers.append(1)
-            # 其他四指 (比較 y 座標：指尖 y 小於 第二關節 y)
-            for tip_id in [8, 12, 16, 20]:
-                if landmarks[tip_id].y < landmarks[tip_id - 2].y:
-                    fingers.append(1)
+        with mp_hands.Hands(static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5) as hands_engine:
+            results = hands_engine.process(img_rgb)
             
-            count = len(fingers)
-            
-            # 4. 指令分配
-            if count == 1:
-                result_msg = get_portfolio_status()
-            elif 2 <= count <= 5:
-                result_msg = f"偵測到數字 {count}：目前尚未設定功能 (空白)。"
+            if results.multi_hand_landmarks:
+                landmarks = results.multi_hand_landmarks[0].landmark
+                fingers = []
+                if landmarks[4].x < landmarks[3].x: fingers.append(1) # 拇指
+                for tip in [8, 12, 16, 20]: # 其他四指
+                    if landmarks[tip].y < landmarks[tip - 2].y: fingers.append(1)
+                
+                count = len(fingers)
+                
+                if count == 1:
+                    res_text = get_portfolio_status()
+                elif 2 <= count <= 5:
+                    res_text = f"偵測到數字 {count}：此功能目前尚未設定。"
+                else:
+                    res_text = "看到手掌了，但沒比出清楚的數字。"
             else:
-                result_msg = "偵測到手勢，但手指頭沒張開？請再試一次。"
-        else:
-            result_msg = "照片裡沒看到手掌，請正對鏡頭拍照。"
+                res_text = "沒抓到手勢，請對準鏡頭拍照。"
 
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result_msg))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=res_text))
+        
     except Exception as e:
-        print(f"辨識出錯：{e}")
+        print(f"辨識出錯: {e}")
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統過載或發生錯誤，請稍後再拍！"))
 
-# --- 核心畫圖函式 (維持不變) ---
+# --- 核心畫圖函式 ---
 def generate_chart(stock_id, chart_type="K"):
     try:
         df = pd.DataFrame()
@@ -164,6 +141,7 @@ def generate_chart(stock_id, chart_type="K"):
                 plot_type = 'line'
                 title_suffix = "Intraday Trend"
                 dt_format = "%H:%M"
+        
         if df.empty or len(df) < 2: return None
         title_text = f"[{stock_id}] {title_suffix}"
         buf = io.BytesIO()
@@ -175,10 +153,9 @@ def generate_chart(stock_id, chart_type="K"):
         res = requests.post("https://api.imgbb.com/1/upload", data={"key": IMGBB_API_KEY, "image": img_base64})
         if res.status_code == 200: return res.json()["data"]["url"]
         return None
-    except Exception as e:
-        return None
+    except: return None
 
-# --- 報價取得函式 (維持不變) ---
+# --- 報價取得函式 ---
 def get_quote(msg):
     msg = msg.upper().strip()
     if msg.isdigit() and len(msg) >= 4:
@@ -198,7 +175,7 @@ def get_quote(msg):
                         f"前日收盤：{pc:.2f} TWD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
                         f"今日開盤：{to:.2f} TWD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
             else: return f"【{name_display}】歷史資料筆數不足。"
-        except Exception as e: return f"查詢台股 {msg} 錯誤：{str(e)}"
+        except Exception as e: return f"查詢錯誤：{str(e)}"
     elif msg.isalpha() and 1 <= len(msg) <= 5:
         try:
             stock = yf.Ticker(msg)
@@ -216,10 +193,10 @@ def get_quote(msg):
                         f"前日收盤：${pc:.2f} USD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
                         f"今日開盤：${to:.2f} USD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
             else: return f"【{msg}】歷史資料筆數不足。"
-        except Exception as e: return f"查詢美股 {msg} 錯誤：{str(e)}"
+        except Exception as e: return f"查詢錯誤：{str(e)}"
     return None
 
-# --- 定時報告與排程 (維持不變) ---
+# --- 定時報告 ---
 def us_market_closing_report():
     indices = {"^DJI": "道瓊工業", "^GSPC": "標普 500", "^IXIC": "那斯達克", "^SOX": "費城半導體"}
     results = []
@@ -258,7 +235,7 @@ scheduler.add_job(us_night_report, 'cron', day_of_week='mon-fri', hour=21, minut
 scheduler.start()
 
 @app.route("/", methods=['GET'])
-def index(): return "Bot is running!"
+def index(): return "Stock Bot is Alive!"
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -274,27 +251,28 @@ def handle_message(event):
     user_id = event.source.user_id
     if user_msg.startswith("K"):
         sid = user_msg.replace("K", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您繪製 {sid} 的 K 線圖..."))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在繪製 {sid} K線圖..."))
         url = generate_chart(sid, "K")
         if url: line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
         else: line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗。"))
         return
     if user_msg.startswith("走"):
         sid = user_msg.replace("走", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在為您抓取 {sid} 即時走勢..."))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在抓取 {sid} 即時走勢..."))
         url = generate_chart(sid, "走")
         if url: line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
         else: line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗。"))
         return
+    
     result = get_quote(user_msg)
-    if result and "找不到" not in result and "發生錯誤" not in result:
+    if result and "找不到" not in result and "錯誤" not in result:
         quick_reply = QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="K 線圖", text=f"K{user_msg}")),
             QuickReplyButton(action=MessageAction(label="當日走勢", text=f"走{user_msg}"))
         ])
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
     else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入代號查詢"))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入正確代號"))
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))

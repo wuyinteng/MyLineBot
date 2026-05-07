@@ -6,9 +6,8 @@ apscheduler
 matplotlib
 mplfinance
 requests
-mediapipe
 opencv-python-headless
+mediapipe
+protobuf
 numpy
-pandas
 gunicorn
-tqdm
