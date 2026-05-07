@@ -1,11 +1,8 @@
-Flask
+flask
 line-bot-sdk
 yfinance
 FinMind
-APScheduler
-pandas
-tqdm
-gunicorn
+apscheduler
 matplotlib
 mplfinance
 requests
