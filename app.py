@@ -20,6 +20,19 @@ import io
 
 app = Flask(__name__)
 
+import mediapipe as mp
+import cv2
+import numpy as np
+from linebot.models import MessageEvent, ImageMessage, TextSendMessage
+
+# --- 1. 定義您的庫存資料 (請在此修改您的買進成本) ---
+# 格式：'代號': [買進價格, 持股數量]
+my_holdings = {
+    '2330': [600.0, 1000],  # 台積電：買在 600 元，1張
+    '2317': [100.5, 2000],  # 鴻海：買在 100.5 元，2張
+    'NVDA': [120.0, 10]     # 美股輝達：買在 120 元，10股
+}
+
 # --- ImgBB API 金鑰 ---
 IMGBB_API_KEY = "4bc61e9d363f21433c906beb7440dd92"
 
@@ -43,7 +56,6 @@ try:
 except Exception as e:
     print(f"台股清單載入失敗: {e}")
 
-# --- [修改] 核心畫圖函式 (全英文專業版，破解 Yahoo 時差 Bug + 修復台股走勢) ---
 # --- [修改] 核心畫圖函式 (終極防護版：解決走勢圖畫不出來的問題) ---
 def generate_chart(stock_id, chart_type="K"):
     try:
@@ -74,7 +86,6 @@ def generate_chart(stock_id, chart_type="K"):
                 dt_format = "%m/%d"
             else:
                 # 【當日走勢圖專屬邏輯】
-                # 台股用 5m 比較穩，美股維持 1m
                 req_interval = "5m" if stock_id.isdigit() else "1m"
                 
                 # 策略：抓 5 天資料確保不漏接
@@ -154,6 +165,63 @@ def generate_chart(stock_id, chart_type="K"):
     except Exception as e:
         print(f"畫圖失敗: {e}")
         return None
+
+def get_portfolio_status():
+    report = "【即時庫存損益報告】\n"
+    report += "------------------------\n"
+    total_cost = 0
+    total_market_value = 0
+    
+    for stock_id, info in my_holdings.items():
+        buy_price, amount = info
+        # 判斷台股或美股
+        ticker_id = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
+        try:
+            stock = yf.Ticker(ticker_id)
+            current_price = stock.fast_info['last_price']
+            
+            # 計算單檔損益
+            cost = buy_price * amount
+            mkt_val = current_price * amount
+            profit = mkt_val - cost
+            profit_pct = (profit / cost) * 100
+            
+            total_cost += cost
+            total_market_value += mkt_val
+            
+            # 格式化輸出
+            icon = "🔺" if profit >= 0 else "🔻"
+            name = tw_stock_dict.get(stock_id, stock_id) # 拿我們之前做的中文名稱字典
+            report += f"{icon} {name}\n現價: {current_price:.2f} ({profit_pct:+.2f}%)\n"
+        except:
+            report += f"{stock_id} 資料抓取失敗\n"
+            
+    # 總結
+    total_profit_pct = ((total_market_value - total_cost) / total_cost) * 100
+    report += "------------------------\n"
+    report += f"總預估損益：{total_profit_pct:+.2f}%"
+    return report
+
+# --- 3. 照片判讀與指令分配 ---
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image(event):
+    
+    # 假設辨識出的手指數量為 count
+    if count == 1:
+        # 指令 1：庫存損益
+        result_msg = get_portfolio_status()
+    elif count == 2:
+        result_msg = "指令 2：(目前尚未設定功能)"
+    elif count == 3:
+        result_msg = "指令 3：(目前尚未設定功能)"
+    elif count == 4:
+        result_msg = "指令 4：(目前尚未設定功能)"
+    elif count == 5:
+        result_msg = "指令 5：(目前尚未設定功能)"
+    else:
+        result_msg = f"偵測到手勢 {count}，尚未定義指令。"
+
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result_msg))
 
 # --- 報價取得函式 ---
 def get_quote(msg):

@@ -9,3 +9,5 @@ gunicorn
 matplotlib
 mplfinance
 requests
+mediapipe
+opencv-python-headless
