@@ -58,7 +58,7 @@ except Exception as e:
 
 # --- [新增] 損益計算函式 ---
 def get_portfolio_status():
-    report = "【即時庫存損益報告】\n"
+    report = "📊 【個人即時損益報告】\n"
     report += "------------------------\n"
     total_cost = 0
     total_market_value = 0
@@ -69,12 +69,10 @@ def get_portfolio_status():
         try:
             stock = yf.Ticker(ticker_id)
             current_price = stock.fast_info['last_price']
-            
             cost = buy_price * amount
             mkt_val = current_price * amount
             profit = mkt_val - cost
             profit_pct = (profit / cost) * 100
-            
             total_cost += cost
             total_market_value += mkt_val
             
@@ -82,34 +80,36 @@ def get_portfolio_status():
             name = tw_stock_dict.get(stock_id, stock_id)
             report += f"{icon} {name}\n現價: {current_price:.2f} ({profit_pct:+.2f}%)\n\n"
         except:
-            report += f"{stock_id} 資料抓取失敗\n"
+            report += f"{stock_id} 抓取失敗\n"
             
-    total_profit_pct = ((total_market_value - total_cost) / total_cost) * 100
+    total_ret = ((total_market_value - total_cost) / total_cost) * 100
     report += "------------------------\n"
-    report += f"總預估回報率：{total_profit_pct:+.2f}%"
+    report += f"總預估損益：{total_ret:+.2f}%"
     return report
 
-# --- [新增] 照片手勢處理邏輯 ---
+# --- [完整修復] 照片辨識邏輯 ---
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     try:
-        # 1. 下載照片
+        # 1. 下載 LINE 照片
         message_content = line_bot_api.get_message_content(event.message.id)
         image_bytes = b"".join([chunk for chunk in message_content.iter_content()])
         
-        # 2. 轉為 AI 格式
+        # 2. 轉換為 AI 格式
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # 3. AI 判讀手勢
+        # 3. 執行 AI 辨識
         results = hands_engine.process(img_rgb)
         
         if results.multi_hand_landmarks:
+            # 數手指邏輯
             landmarks = results.multi_hand_landmarks[0].landmark
             fingers = []
-            # 判斷手指伸直邏輯 (y座標 tip < joint)
-            if landmarks[4].x < landmarks[3].x: fingers.append(1) # 拇指
+            # 拇指 (簡易判斷：x座標比較)
+            if landmarks[4].x < landmarks[3].x: fingers.append(1)
+            # 其他四指 (比較 y 座標：指尖 y 小於 第二關節 y)
             for tip_id in [8, 12, 16, 20]:
                 if landmarks[tip_id].y < landmarks[tip_id - 2].y:
                     fingers.append(1)
@@ -120,15 +120,15 @@ def handle_image(event):
             if count == 1:
                 result_msg = get_portfolio_status()
             elif 2 <= count <= 5:
-                result_msg = f"偵測到手勢 {count}：(功能開發中...)"
+                result_msg = f"偵測到數字 {count}：目前尚未設定功能 (空白)。"
             else:
-                result_msg = "偵測到手勢，但手指數量無法辨識。"
+                result_msg = "偵測到手勢，但手指頭沒張開？請再試一次。"
         else:
-            result_msg = "沒看到清楚的手掌，請正對鏡頭拍一次。"
+            result_msg = "照片裡沒看到手掌，請正對鏡頭拍照。"
 
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result_msg))
     except Exception as e:
-        print(f"照片辨識錯誤: {e}")
+        print(f"辨識出錯：{e}")
 
 # --- 核心畫圖函式 (維持不變) ---
 def generate_chart(stock_id, chart_type="K"):
