@@ -245,31 +245,68 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event): 
     user_msg = event.message.text.strip().upper()
-    user_id = event.source.user_id
+    # 因為全面改用免費的 reply_message，所以不需要 user_id 了，可以註解或刪除
+    # user_id = event.source.user_id 
+    
+    # ---------------- 1. 處理 K 線圖 ----------------
     if user_msg.startswith("K"):
         sid = user_msg.replace("K", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在繪製 {sid} K線圖..."))
+        # 直接去生圖 (注意：生圖時間請盡量控制在數秒內，否則 LINE 會逾時)
         url = generate_chart(sid, "K")
-        if url: line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
-        else: line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗。"))
+        
+        if url: 
+            # 成功生圖：將「文字」與「圖片」打包成一個陣列，使用唯一的一次 reply_token 送出
+            line_bot_api.reply_message(
+                event.reply_token, 
+                [
+                    TextSendMessage(text=f"繪製完成！這是 {sid} 的 K 線圖："),
+                    ImageSendMessage(original_content_url=url, preview_image_url=url)
+                ]
+            )
+        else: 
+            # 生圖失敗：回報錯誤
+            line_bot_api.reply_message(
+                event.reply_token, 
+                TextSendMessage(text="圖片產生失敗，請稍後再試。")
+            )
         return
+
+    # ---------------- 2. 處理 當日走勢圖 ----------------
     if user_msg.startswith("走"):
         sid = user_msg.replace("走", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在抓取 {sid} 即時走勢..."))
         url = generate_chart(sid, "走")
-        if url: line_bot_api.push_message(user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
-        else: line_bot_api.push_message(user_id, TextSendMessage(text="圖片產生失敗。"))
+        
+        if url: 
+            line_bot_api.reply_message(
+                event.reply_token, 
+                [
+                    TextSendMessage(text=f"抓取完成！這是 {sid} 的即時走勢圖："),
+                    ImageSendMessage(original_content_url=url, preview_image_url=url)
+                ]
+            )
+        else: 
+            line_bot_api.reply_message(
+                event.reply_token, 
+                TextSendMessage(text="圖片產生失敗，請稍後再試。")
+            )
         return
-    
+        
+    # ---------------- 3. 處理 一般股價查詢與快速回覆 (原本的邏輯，保持不變) ----------------
     result = get_quote(user_msg)
     if result and "找不到" not in result and "錯誤" not in result:
         quick_reply = QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="K 線圖", text=f"K{user_msg}")),
             QuickReplyButton(action=MessageAction(label="當日走勢", text=f"走{user_msg}"))
         ])
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(text=result, quick_reply=quick_reply)
+        )
     else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入正確代號"))
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(text=result if result else "請輸入正確代號")
+        )
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
