@@ -19,7 +19,6 @@ import traceback
 
 # --- [新增] 外包大腦：Google Gemini 套件 ---
 import google.generativeai as genai
-vision_model = genai.GenerativeModel('gemini-1.5-flash')
 from PIL import Image
 
 app = Flask(__name__)
@@ -82,19 +81,30 @@ def handle_image(event):
     try:
         # 1. 下載 LINE 照片
         msg_content = line_bot_api.get_message_content(event.message.id)
-        img_bytes = b"".join([chunk for chunk in msg_content.iter_content()])
+        
+        # 使用 io.BytesIO 暫存圖片，確保資料流完整
+        img_buffer = io.BytesIO()
+        for chunk in msg_content.iter_content():
+            img_buffer.write(chunk)
+        img_buffer.seek(0) # 指針回到開頭
         
         # 2. 將照片轉給 Gemini 看
-        img = Image.open(io.BytesIO(img_bytes))
+        img = Image.open(img_buffer)
         prompt = "這張照片裡有一隻手。請問這隻手伸直了幾根手指頭？請只回答我一個阿拉伯數字（例如：1, 2, 3, 4, 5）。如果沒有手或看不清楚，請回答 0。"
         
+        # 使用列表形式傳遞 [文字, 圖片]
         response = vision_model.generate_content([prompt, img])
-        result_text = response.text.strip()
         
-        # 3. 根據 Gemini 回報的數字執行指令
+        # 安全取得文字結果，避免 Gemini 因為安全機制拒絕回答導致 crash
+        if response.candidates:
+            result_text = response.text.strip()
+        else:
+            result_text = "0"
+        
+        # 3. 根據數字執行指令... (後續邏輯維持不變)
         if "1" in result_text:
             res_text = get_portfolio_status()
-        elif result_text in ["2", "3", "4", "5"]:
+        elif any(n in result_text for n in ["2", "3", "4", "5"]):
             res_text = f"偵測到數字 {result_text}：此功能目前尚未設定。"
         else:
             res_text = "Gemini 說看不清楚手勢，請重拍一張喔！"
@@ -103,7 +113,9 @@ def handle_image(event):
         
     except Exception as e:
         print(f"辨識出錯：{e}")
-        print(traceback.format_exc())  # 👈 印出完整的錯誤追蹤路徑
+        traceback.print_exc()
+        # 發生錯誤時回覆使用者，避免使用者空等
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="系統辨識繁忙，請稍後再試！"))
 
 # --- 核心畫圖函式 ---
 def generate_chart(stock_id, chart_type="K"):
