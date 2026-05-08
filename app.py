@@ -19,6 +19,7 @@ import traceback
 
 # --- [新增] 外包大腦：Google Gemini 套件 ---
 import google.generativeai as genai
+vision_model = genai.GenerativeModel('gemini-1.5-flash')
 from PIL import Image
 
 app = Flask(__name__)
