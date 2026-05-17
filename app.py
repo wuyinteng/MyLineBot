@@ -1,12 +1,11 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage, QuickReply, QuickReplyButton, MessageAction
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage, QuickReply, QuickReplyButton, MessageAction, FlexSendMessage
 import yfinance as yf
 from FinMind.data import DataLoader
 import datetime
 from datetime import timedelta
-from apscheduler.schedulers.background import BackgroundScheduler
 import time
 import pandas as pd
 import os
@@ -19,6 +18,7 @@ import io
 import traceback
 import google.generativeai as genai
 import threading
+import json
 
 app = Flask(__name__)
 
@@ -35,7 +35,6 @@ IMGBB_API_KEY = "4bc61e9d363f21433c906beb7440dd92"
 dl = DataLoader()
 if FINMIND_TOKEN: dl.login_by_token(api_token=FINMIND_TOKEN)
 
-# 為了讓發送動畫也可以使用，將 Token 獨立成變數
 LINE_CHANNEL_ACCESS_TOKEN = '8g/5K/9WQ7EiuEm16BBJ/aOjy7beli9UQS1oKoX3Jswq1iGuYxvlvT+OLpWO4ZTjRWscQlvRknxmtdioggR+rILSsd28GBtd1lbDcvPgv1VEE6yzdGScPxD/Evstgxtd6+lFTohe+R5lBjVi/+fqpQdB04t89/1O/w1cDnyilFU='
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler('6394456d4596cc6aadb9c92dda96b296')
@@ -48,29 +47,20 @@ try:
 except: pass
 
 # ==========================================
-# 🌟 [新增] LINE 隱藏版讀取中動畫 (...) 函式
+# 🌟 LINE 讀取中動畫
 # ==========================================
 def show_loading_animation(chat_id, loading_seconds=20):
-    """
-    呼叫 LINE 官方 API，在聊天室顯示「...」的打字動畫。
-    這是完全免費的，能讓使用者知道機器人正在處理，沒有當機！
-    """
     url = "https://api.line.me/v2/bot/chat/loading/start"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
     }
-    data = {
-        "chatId": chat_id,
-        "loadingSeconds": loading_seconds # 預設顯示 20 秒，當訊息送出時動畫會自動消失
-    }
-    try:
-        requests.post(url, headers=headers, json=data, timeout=3)
-    except:
-        pass
+    data = {"chatId": chat_id, "loadingSeconds": loading_seconds}
+    try: requests.post(url, headers=headers, json=data, timeout=3)
+    except: pass
 
 # ==========================================
-# 📊 2. 技術指標量化引擎 (保留原樣)
+# 📊 2. 技術指標量化引擎
 # ==========================================
 def get_technical_indicators(stock_id):
     try:
@@ -80,8 +70,7 @@ def get_technical_indicators(stock_id):
             ticker_id = f"{stock_id}.TWO"
             df = yf.Ticker(ticker_id).history(period="6mo")
             
-        if df.empty or len(df) < 30:
-            return "\n📈 技術指標: 數據不足\n"
+        if df.empty or len(df) < 30: return "\n📈 技術指標: 數據不足\n"
 
         delta = df['Close'].diff()
         up, down = delta.clip(lower=0), -1 * delta.clip(upper=0)
@@ -113,25 +102,25 @@ def get_technical_indicators(stock_id):
         elif price_up: vp_status = "📈 溫和上漲 (量能持平)"
         else: vp_status = "📉 溫和下跌 (量能持平)"
 
-        macd_trend = "🔴紅柱增長(動能強)" if latest['MACD_Histogram'] > 0 and latest['MACD_Histogram'] > prev['MACD_Histogram'] else \
-                     "🔴紅柱縮減(動能弱)" if latest['MACD_Histogram'] > 0 else \
-                     "🟢綠柱縮減(跌勢緩)" if latest['MACD_Histogram'] < 0 and latest['MACD_Histogram'] > prev['MACD_Histogram'] else \
-                     "🟢綠柱增長(跌勢強)"
+        macd_trend = "🔴紅柱增長" if latest['MACD_Histogram'] > 0 and latest['MACD_Histogram'] > prev['MACD_Histogram'] else \
+                     "🔴紅柱縮減" if latest['MACD_Histogram'] > 0 else \
+                     "🟢綠柱縮減" if latest['MACD_Histogram'] < 0 and latest['MACD_Histogram'] > prev['MACD_Histogram'] else \
+                     "🟢綠柱增長"
                      
         kd_cross = "⭐黃金交叉" if prev['K'] < prev['D'] and latest['K'] > latest['D'] else \
                    "⚠️死亡交叉" if prev['K'] > prev['D'] and latest['K'] < latest['D'] else \
                    "偏多" if latest['K'] > latest['D'] else "偏空"
 
         return (f"\n📈 【最新技術與量價動能】:\n"
-                f"- 量價結構: {vp_status} (今日成交量: {int(latest['Volume']/1000)}張, 5日均量: {int(latest['Vol_5MA']/1000)}張)\n"
+                f"- 量價結構: {vp_status} (成交量: {int(latest['Volume']/1000)}張)\n"
                 f"- RSI (14日): {round(latest['RSI'], 1)}\n"
-                f"- MACD 柱狀圖: {macd_trend} (數值: {round(latest['MACD_Histogram'], 2)})\n"
-                f"- KD 指標 (9,3,3): K={round(latest['K'], 1)}, D={round(latest['D'], 1)} [{kd_cross}]\n")
-    except Exception as e:
+                f"- MACD 柱狀圖: {macd_trend} ({round(latest['MACD_Histogram'], 2)})\n"
+                f"- KD 指標: K={round(latest['K'], 1)}, D={round(latest['D'], 1)} [{kd_cross}]\n")
+    except Exception:
         return "\n📈 技術指標: 暫時無法獲取\n"
 
 # ==========================================
-# 💰 3. 基礎面與籌碼直連引擎 (保留原樣)
+# 💰 3. 基礎面與籌碼直連引擎
 # ==========================================
 def get_finmind_data(stock_id):
     today = datetime.datetime.now()
@@ -180,61 +169,57 @@ def get_finmind_data(stock_id):
         if not valid_pe.empty: historical_avg_pe = round(valid_pe.median(), 2)
 
     data_summary += get_technical_indicators(stock_id)
-    return stock_name, data_summary, latest_price, historical_avg_pe
+    # 注意：這裡多回傳了 ttm_eps 給 Flex Message 使用
+    return stock_name, data_summary, latest_price, historical_avg_pe, ttm_eps
 
 # ==========================================
-# 🤖 4. AI 報告生成核心 (保留原樣)
+# 🤖 4. AI 報告生成核心 (禁止 Markdown 表格版)
 # ==========================================
 def get_ai_report_for_line(stock_id):
     try:
-        stock_name, real_data_context, latest_price, historical_avg_pe = get_finmind_data(stock_id)
+        stock_name, real_data_context, latest_price, historical_avg_pe, ttm_eps = get_finmind_data(stock_id)
         now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
         
         prompt = f"""
-        你現在是一位頂級的外資券商首席分析師。請為台股代號 【{stock_id} {stock_name}】 撰寫一份深度的個股研究報告。
-        【系統已為你抓取最新的量化、籌碼與技術面真實數據如下，請務必參考】：
+        你是一位頂級的外資券商首席分析師。請為台股代號 【{stock_id} {stock_name}】 撰寫一份深度的個股研究報告。
+        【系統量化、籌碼與技術面真實數據】：
         {real_data_context}
         
-        請嚴格遵守以下「三頁式」的排版與內容要求，使用 Markdown 格式輸出：
-        # 【{stock_id} {stock_name}】深度投資評估報告
-        **日期時間：** {now_str}
+        ⚠️ 【排版致命規則】：絕對禁止使用任何 Markdown 表格語法（例如 |---| 或表格排版）！通訊軟體無法解析。一律使用 Emoji 加上條列式來排版。請嚴格依照以下結構輸出：
+
+        # 🎯 核心評價與目標價
+        * 估值算式：(推估未來一年EPS _____ 元) × (歷史平均PE {historical_avg_pe}倍)
+        * AI 目標價：_____ 元
+        * 潛在空間：_____%
+        * 買賣評價：(強勢買進 / 逢低布局 / 中立觀望 / 避開減碼)
+
+        ---
+        # 🏢 公司基本資訊與估值
+        🔸 所屬產業：(填寫)
+        🔸 目前市值：(填寫)億元
+        🔸 本益比位階：(評估偏高/合理/偏低)
+
+        ---
+        # 🌟 五角雷達綜合評分 (總分：__/100)
+        1. 題材面 ( /20分)：(族群熱度)
+        2. 基本面 ( /20分)：(營收與EPS動能)
+        3. 技術面 ( /25分)：(量價結構與指標解析)
+        4. 籌碼面 ( /25分)：(法人動向)
+        5. 新聞面 ( /10分)：(市場催化劑)
+
+        ---
+        # 📄 第二頁：基本面與同業評比
+        🔸 核心業務與產品線：
+        (精簡條列說明佔比與成長動能)
         
-        【核心規則：目標價計算公式】
-        你必須絕對依賴系統提供的數據，並遵守以下公式計算目標價：
-        1. 算出「近四季 EPS 總和」(TTM EPS)。
-        2. 觀察 EPS 成長率，客觀推估「未來 1 年預估 EPS」。
-        3. 合理目標價 = (未來 1 年預估 EPS) × (近三年歷史平均 PE {historical_avg_pe} 倍)。
-        4. 潛在漲幅 = [(合理目標價 / 目前股價) - 1] × 100%。
+        🔸 同業競爭力評比：(請用條列式，不要畫表格)
+        ▪️ [同業A名稱/代號]：核心差異...
+        ▪️ [同業B名稱/代號]：核心差異...
+
         ---
-        ## 🎯 核心評價與目標價
-        * **現在市價：** {latest_price} 元
-        * **估值算式：** (預估未來一年 EPS _____ 元) × (歷史平均 PE {historical_avg_pe} 倍)
-        * **AI 目標價：** (填入算出的目標價) 元
-        * **潛在空間：** (填寫漲跌幅，例如：+15% 或 -5%)
-        * **買賣評價：** (根據潛在空間給出：強勢買進 / 逢低布局 / 中立觀望 / 避開減碼)
-        ---
-        ## 🏢 公司基本資訊與估值評估
-        | 項目 | 數據評估 | 項目 | 數據評估 |
-        | :--- | :--- | :--- | :--- |
-        | **所屬產業** | (依據上方數據填寫) | **目前市值** | (依據上方數據填寫) 億元 (請評估為大型/中小型) |
-        | **目前股本** | (依據上方數據填寫) 億元 | **本益比位階** | (對比歷史PE，評估偏高/合理/偏低) |
-        ---
-        ## 🌟 五角雷達綜合評分 (總分：__/100)
-        1. **題材面 ( /20分)：** 所屬族群為(填寫)，目前資金熱度(填寫)。
-        2. **基本面 ( /20分)：** (依據營收YoY與EPS成長率評估)。
-        3. **技術面 ( /25分)：** (請綜合評估均線位置與量價狀態給予建議)。
-        4. **籌碼面 ( /25分)：** (依據三大法人買賣超評估)。
-        5. **新聞面 ( /10分)：** (近期市場催化劑評估)。
-        ---
-        ## 📄 第二頁：公司基本面與財務對比分析
-        1. 公司基本介紹與核心業務
-        2. 主力成長動能與業務關鍵分析
-        3. 同業競爭力評比表格
-        4. 分析師綜合評估總結 (300字以內)
-        ---
-        ## 📊 第三頁：三大法人籌碼動向與股價解析
-        **1. 近 10 個交易日法人籌碼流向表**
-        **2. 籌碼與技術指標連動之專業分析 (300~400字)**
+        # 📊 第三頁：籌碼與技術戰術
+        🔸 近期主力是誰？(土洋對作或集中度)
+        🔸 未來一週戰術建議：(支撐與防守價位)
         """
         response = model.generate_content(prompt)
         full_report = response.text
@@ -246,7 +231,6 @@ def get_ai_report_for_line(stock_id):
         for p in paragraphs:
             clean_p = p.strip()
             if not clean_p: continue
-            
             if len(current_page) + len(clean_p) < 800:
                 current_page += clean_p + "\n\n---\n\n"
             else:
@@ -256,10 +240,107 @@ def get_ai_report_for_line(stock_id):
         if current_page:
             pages.append(current_page.strip('- \n'))
             
-        return stock_name, pages[:5]
+        # 多回傳 latest_price, historical_avg_pe, ttm_eps 給 Flex Message
+        return stock_name, pages[:4], latest_price, historical_avg_pe, ttm_eps
 
     except Exception as e:
-        return stock_id, [f"AI 分析失敗: {str(e)}"]
+        return stock_id, [f"AI 分析失敗: {str(e)}"], 0, 0, 0
+
+# ==========================================
+# 🎨 5. 創建 Flex Message 卡片
+# ==========================================
+def create_report_flex_card(stock_id, stock_name, latest_price, ttm_eps, pe_ratio):
+    """產出首頁的高質感數據卡片"""
+    flex_json = {
+      "type": "bubble",
+      "size": "mega",
+      "header": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "🤖 AI 深度特戰報告",
+            "color": "#aaaaaa",
+            "size": "sm",
+            "weight": "bold"
+          },
+          {
+            "type": "text",
+            "text": f"{stock_name} ({stock_id})",
+            "color": "#1DB446",
+            "size": "xl",
+            "weight": "bold",
+            "margin": "sm"
+          }
+        ],
+        "paddingAll": "20px",
+        "paddingBottom": "0px"
+      },
+      "body": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": f"{latest_price} 元",
+            "size": "3xl",
+            "weight": "bold",
+            "color": "#333333"
+          },
+          {
+            "type": "text",
+            "text": "最新市價",
+            "color": "#aaaaaa",
+            "size": "sm",
+            "margin": "xs"
+          },
+          {
+            "type": "separator",
+            "margin": "lg"
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "margin": "lg",
+            "spacing": "sm",
+            "contents": [
+              {
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                  {"type": "text", "text": "近四季 EPS", "color": "#aaaaaa", "size": "sm", "flex": 1},
+                  {"type": "text", "text": f"{ttm_eps} 元", "color": "#666666", "size": "sm", "flex": 2, "align": "end", "weight": "bold"}
+                ]
+              },
+              {
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                  {"type": "text", "text": "歷史本益比", "color": "#aaaaaa", "size": "sm", "flex": 1},
+                  {"type": "text", "text": f"{pe_ratio} 倍", "color": "#666666", "size": "sm", "flex": 2, "align": "end", "weight": "bold"}
+                ]
+              }
+            ]
+          }
+        ],
+        "paddingAll": "20px"
+      },
+      "footer": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "⬇️ 深度 AI 分析請見下方文字 ⬇️",
+            "color": "#aaaaaa",
+            "size": "xs",
+            "align": "center"
+          }
+        ]
+      }
+    }
+    return FlexSendMessage(alt_text=f"【{stock_name}】深度分析報告", contents=flex_json)
 
 # ==========================================
 # 繪圖與報價函式
@@ -324,7 +405,7 @@ def get_quote(msg):
     return None
 
 # ==========================================
-# 🌐 5. 伺服器與 LINE 路由處理
+# 🌐 6. 伺服器與 LINE 路由處理
 # ==========================================
 @app.route("/", methods=['GET'])
 def index(): return "Stock Bot is Alive!"
@@ -342,12 +423,16 @@ def callback():
 # ==========================================
 def async_ai_reply_task(reply_token, sid):
     try:
-        stock_name, report_pages = get_ai_report_for_line(sid)
+        # 獲取 AI 生成文字與量化數據
+        stock_name, report_pages, latest_price, historical_avg_pe, ttm_eps = get_ai_report_for_line(sid)
         
         messages = []
-        # 第一個氣泡先給一句溫馨提示
-        messages.append(TextSendMessage(text=f"🎯 【{stock_name}】 的深度特戰報告已經為您生成完畢！請過目："))
         
+        # 1. 放入精美的 Flex Message 數據卡片 (第一張牌)
+        flex_card = create_report_flex_card(sid, stock_name, latest_price, ttm_eps, historical_avg_pe)
+        messages.append(flex_card)
+        
+        # 2. 依序把 AI 的無表格條列式分析文字加入 (最多4個泡泡，加上卡片剛好5個滿編)
         for i, page_text in enumerate(report_pages):
             if i < 4: 
                 messages.append(TextSendMessage(text=page_text.strip()))
@@ -365,28 +450,22 @@ def async_ai_reply_task(reply_token, sid):
             pass 
 
 # ==========================================
-# 💬 6. 接收訊息與邏輯分流
+# 💬 7. 接收訊息與邏輯分流
 # ==========================================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event): 
     user_msg = event.message.text.strip().upper()
     
-    # 取得聊天室 ID（用於觸發免費讀取動畫）
     chat_id = event.source.user_id
     if event.source.type == 'group': chat_id = event.source.group_id
     elif event.source.type == 'room': chat_id = event.source.room_id
     
-    # --- 1. K 線圖 (加上動畫與提示詞) ---
     if user_msg.startswith("K"):
         sid = user_msg.replace("K", "")
-        # 顯示 LINE 打字動畫「...」
         show_loading_animation(chat_id)
-        
         url = generate_chart(sid, "K")
         stock_name = tw_stock_dict.get(sid, f"代號 {sid}")
-        
         if url: 
-            # 把「文字」跟「圖片」打包成一個 list 一起回傳
             line_bot_api.reply_message(event.reply_token, [
                 TextSendMessage(text=f"✅ 已經為您繪製【{stock_name}】的近期 K 線圖囉！"),
                 ImageSendMessage(original_content_url=url, preview_image_url=url)
@@ -395,14 +474,11 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生失敗，請確認代號是否正確或稍後再試。"))
         return
 
-    # --- 2. 走勢圖 (加上動畫與提示詞) ---
     if user_msg.startswith("走"):
         sid = user_msg.replace("走", "")
         show_loading_animation(chat_id)
-        
         url = generate_chart(sid, "走")
         stock_name = tw_stock_dict.get(sid, f"代號 {sid}")
-        
         if url: 
             line_bot_api.reply_message(event.reply_token, [
                 TextSendMessage(text=f"✅ 已經為您繪製【{stock_name}】的今日盤中走勢圖囉！"),
@@ -412,19 +488,13 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生失敗，請確認代號是否正確或稍後再試。"))
         return
 
-    # --- 3. AI 深度報告 (交給背景執行 + 動畫) ---
     if user_msg.startswith("AI"):
         sid = user_msg.replace("AI", "")
-        
-        # 顯示 LINE 打字動畫「...」 (最長可顯示 20 秒，算完就會提早消失)
         show_loading_animation(chat_id, loading_seconds=30)
-        
-        # 開啟背景線程去慢慢算
         thread = threading.Thread(target=async_ai_reply_task, args=(event.reply_token, sid))
         thread.start()
         return
         
-    # --- 4. 一般股價查詢與選單 ---
     result = get_quote(user_msg)
     if result and "找不到" not in result and "錯誤" not in result:
         quick_reply = QuickReply(items=[
