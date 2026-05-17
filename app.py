@@ -360,52 +360,63 @@ def callback():
     except InvalidSignatureError: abort(400)
     return 'OK'
 
+# ==========================================
+# 💬 5. 接收訊息與邏輯分流 (100% 純免費 reply_message 版)
+# ==========================================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event): 
     user_msg = event.message.text.strip().upper()
     
-    # --- 1. K 線圖 ---
+    # --- 1. K 線圖 (只用 reply_message) ---
     if user_msg.startswith("K"):
         sid = user_msg.replace("K", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在繪製 {sid} K線圖，請稍候..."))
         url = generate_chart(sid, "K")
-        if url: line_bot_api.push_message(event.source.user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
-        else: line_bot_api.push_message(event.source.user_id, TextSendMessage(text="圖片產生失敗。"))
+        if url: 
+            # 一次性用 reply_token 回覆圖片
+            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
+        else: 
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生失敗，請稍後再試。"))
         return
 
-    # --- 2. 走勢圖 ---
+    # --- 2. 走勢圖 (只用 reply_message) ---
     if user_msg.startswith("走"):
         sid = user_msg.replace("走", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"正在抓取 {sid} 走勢圖，請稍候..."))
         url = generate_chart(sid, "走")
-        if url: line_bot_api.push_message(event.source.user_id, ImageSendMessage(original_content_url=url, preview_image_url=url))
-        else: line_bot_api.push_message(event.source.user_id, TextSendMessage(text="圖片產生失敗。"))
+        if url: 
+            line_bot_api.reply_message(event.reply_token, ImageSendMessage(original_content_url=url, preview_image_url=url))
+        else: 
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="圖片產生失敗，請稍後再試。"))
         return
 
-    # --- 3. 【全新升級】AI 深度特戰報告 (三連發) ---
+    # --- 3. 【嚴格修正】AI 深度特戰報告 (三連發，純 reply_message) ---
     if user_msg.startswith("AI"):
         sid = user_msg.replace("AI", "")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🤖 正在啟動特戰級量化引擎...\n計算 {sid} 的指標與籌碼中，請稍候 10~20 秒！"))
         
-        # 呼叫超級資料大腦
+        # ⚠️ 注意：這裡不再發送「請稍候」，因為 reply_token 只能用一次！
+        # 使用者輸入指令後，會看到「已讀」，接著等待約 10~15 秒...
+        
+        # 呼叫超級資料大腦 (這段需要一點時間)
         stock_name, report_pages = get_ai_report_for_line(sid)
         
         messages = []
         for i, page_text in enumerate(report_pages):
-            if i < 3: 
-                messages.append(TextSendMessage(text=f"📄 【{stock_name}】 第 {i+1}/3 頁：\n\n{page_text.strip()}"))
+            if i < 4: # LINE 限制一次 reply_message 最多只能包 5 個氣泡
+                messages.append(TextSendMessage(text=f"📄 【{stock_name}】 第 {i+1} 頁：\n\n{page_text.strip()}"))
         
+        # 算好之後，把 3~4 頁的氣泡「一次性」用唯一的一次 reply_token 送出去！
         if messages:
-            line_bot_api.push_message(event.source.user_id, messages)
+            line_bot_api.reply_message(event.reply_token, messages)
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="報告生成失敗，請稍後再試。"))
         return
         
-    # --- 4. 一般股價查詢與選單 ---
+    # --- 4. 一般股價查詢與選單 (原本的邏輯) ---
     result = get_quote(user_msg)
     if result and "找不到" not in result and "錯誤" not in result:
         quick_reply = QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="📈 當日走勢", text=f"走{user_msg}")),
             QuickReplyButton(action=MessageAction(label="📊 K 線圖", text=f"K{user_msg}")),
-            QuickReplyButton(action=MessageAction(label="🤖 AI 深度報告", text=f"AI{user_msg}")) # 按鈕對應 AI 指令
+            QuickReplyButton(action=MessageAction(label="🤖 AI 深度報告", text=f"AI{user_msg}"))
         ])
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
     else:
