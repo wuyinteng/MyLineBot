@@ -340,39 +340,57 @@ def create_report_flex_card(stock_id, stock_name, latest_price, ttm_eps, pe_rati
     return FlexSendMessage(alt_text=f"【{stock_name}】深度分析報告", contents=flex_json)
 
 # ==========================================
-# 📈 6. 繪圖與報價函式 (新增美股邏輯)
+# 📈 6. 繪圖與報價函式 (含美股與上櫃修復)
 # ==========================================
 def generate_chart(stock_id, chart_type="K"):
     try:
         df = pd.DataFrame()
-        ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
         
-        # 針對台股使用 FinMind (K線)
-        if stock_id.isdigit() and chart_type == "K":
-            start_date = (datetime.datetime.now() - timedelta(days=100)).strftime('%Y-%m-%d')
-            df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
-            if not df.empty:
-                df = df.rename(columns={'date': 'Date', 'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'})
-                df['Date'] = pd.to_datetime(df['Date'])
-                df.set_index('Date', inplace=True)
-            plot_type, title_suffix, dt_format = 'candle', "3-Month Chart", "%m/%d"
-        # 針對美股 (K線/走勢) 與 台股 (走勢) 使用 yfinance
-        else:
-            stock = yf.Ticker(ticker)
+        # 1. 處理台股 (全數字)
+        if stock_id.isdigit():
             if chart_type == "K":
-                df = stock.history(period="3mo")
-                if not df.empty: df.index = df.index.tz_localize(None) # 去除時區避免繪圖報錯
+                start_date = (datetime.datetime.now() - timedelta(days=100)).strftime('%Y-%m-%d')
+                df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
+                if not df.empty:
+                    df = df.rename(columns={'date': 'Date', 'open': 'Open', 'max': 'High', 'min': 'Low', 'close': 'Close', 'Trading_Volume': 'Volume'})
+                    df['Date'] = pd.to_datetime(df['Date'])
+                    df.set_index('Date', inplace=True)
                 plot_type, title_suffix, dt_format = 'candle', "3-Month Chart", "%m/%d"
             else:
-                req_interval = "5m" # 美股跟台股的當日走勢統一只抓 5 分鐘K線 (1m有時候yfinance會阻擋)
+                req_interval = "5m"
+                stock = yf.Ticker(f"{stock_id}.TW")
+                df = stock.history(period="5d", interval=req_interval)
+                
+                # 🌟 如果 .TW 抓不到資料，就當作是上櫃公司，改用 .TWO 再抓一次
+                if df.empty:
+                    stock = yf.Ticker(f"{stock_id}.TWO")
+                    df = stock.history(period="5d", interval=req_interval)
+                    
+                if not df.empty: df = df.dropna()
+                if not df.empty and len(df) >= 2:
+                    df.index = df.index.tz_localize(None)
+                    last_day = df.index[-1].date()
+                    df = df[df.index.date == last_day]
+                plot_type, title_suffix, dt_format = 'line', "Intraday Trend", "%H:%M"
+
+        # 2. 處理美股 (包含英文字母)
+        else:
+            stock = yf.Ticker(stock_id)
+            if chart_type == "K":
+                df = stock.history(period="3mo")
+                if not df.empty: df.index = df.index.tz_localize(None)
+                plot_type, title_suffix, dt_format = 'candle', "3-Month Chart", "%m/%d"
+            else:
+                req_interval = "5m"
                 df = stock.history(period="5d", interval=req_interval)
                 if not df.empty: df = df.dropna()
                 if not df.empty and len(df) >= 2:
                     df.index = df.index.tz_localize(None)
                     last_day = df.index[-1].date()
-                    df = df[df.index.date == last_day] # 只留最後一個交易日的資料
+                    df = df[df.index.date == last_day]
                 plot_type, title_suffix, dt_format = 'line', "Intraday Trend", "%H:%M"
         
+        # 3. 開始繪圖
         if df.empty or len(df) < 2: return None
         buf = io.BytesIO()
         mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
