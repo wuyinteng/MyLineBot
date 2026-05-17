@@ -169,7 +169,6 @@ def get_finmind_data(stock_id):
         if not valid_pe.empty: historical_avg_pe = round(valid_pe.median(), 2)
 
     data_summary += get_technical_indicators(stock_id)
-    # 注意：這裡多回傳了 ttm_eps 給 Flex Message 使用
     return stock_name, data_summary, latest_price, historical_avg_pe, ttm_eps
 
 # ==========================================
@@ -240,7 +239,6 @@ def get_ai_report_for_line(stock_id):
         if current_page:
             pages.append(current_page.strip('- \n'))
             
-        # 多回傳 latest_price, historical_avg_pe, ttm_eps 給 Flex Message
         return stock_name, pages[:4], latest_price, historical_avg_pe, ttm_eps
 
     except Exception as e:
@@ -250,7 +248,6 @@ def get_ai_report_for_line(stock_id):
 # 🎨 5. 創建 Flex Message 卡片
 # ==========================================
 def create_report_flex_card(stock_id, stock_name, latest_price, ttm_eps, pe_ratio):
-    """產出首頁的高質感數據卡片"""
     flex_json = {
       "type": "bubble",
       "size": "mega",
@@ -343,12 +340,14 @@ def create_report_flex_card(stock_id, stock_name, latest_price, ttm_eps, pe_rati
     return FlexSendMessage(alt_text=f"【{stock_name}】深度分析報告", contents=flex_json)
 
 # ==========================================
-# 繪圖與報價函式
+# 📈 6. 繪圖與報價函式 (新增美股邏輯)
 # ==========================================
 def generate_chart(stock_id, chart_type="K"):
     try:
         df = pd.DataFrame()
         ticker = f"{stock_id}.TW" if stock_id.isdigit() else stock_id
+        
+        # 針對台股使用 FinMind (K線)
         if stock_id.isdigit() and chart_type == "K":
             start_date = (datetime.datetime.now() - timedelta(days=100)).strftime('%Y-%m-%d')
             df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
@@ -357,19 +356,21 @@ def generate_chart(stock_id, chart_type="K"):
                 df['Date'] = pd.to_datetime(df['Date'])
                 df.set_index('Date', inplace=True)
             plot_type, title_suffix, dt_format = 'candle', "3-Month Chart", "%m/%d"
+        # 針對美股 (K線/走勢) 與 台股 (走勢) 使用 yfinance
         else:
             stock = yf.Ticker(ticker)
             if chart_type == "K":
                 df = stock.history(period="3mo")
+                if not df.empty: df.index = df.index.tz_localize(None) # 去除時區避免繪圖報錯
                 plot_type, title_suffix, dt_format = 'candle', "3-Month Chart", "%m/%d"
             else:
-                req_interval = "5m" if stock_id.isdigit() else "1m"
+                req_interval = "5m" # 美股跟台股的當日走勢統一只抓 5 分鐘K線 (1m有時候yfinance會阻擋)
                 df = stock.history(period="5d", interval=req_interval)
                 if not df.empty: df = df.dropna()
                 if not df.empty and len(df) >= 2:
                     df.index = df.index.tz_localize(None)
                     last_day = df.index[-1].date()
-                    df = df[df.index.date == last_day]
+                    df = df[df.index.date == last_day] # 只留最後一個交易日的資料
                 plot_type, title_suffix, dt_format = 'line', "Intraday Trend", "%H:%M"
         
         if df.empty or len(df) < 2: return None
@@ -385,6 +386,8 @@ def generate_chart(stock_id, chart_type="K"):
 
 def get_quote(msg):
     msg = msg.upper().strip()
+    
+    # 判斷是否為台股 (全數字)
     if msg.isdigit() and len(msg) >= 4:
         try:
             stock_name = tw_stock_dict.get(msg, "")
@@ -402,10 +405,39 @@ def get_quote(msg):
                         f"前日收盤：{pc:.2f} TWD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
                         f"今日開盤：{to:.2f} TWD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
         except Exception as e: return f"查詢錯誤：{str(e)}"
+        
+    # 若不是全數字，當作美股或 ETF 處理
+    else:
+        try:
+            stock = yf.Ticker(msg)
+            df = stock.history(period="5d")
+            
+            if df.empty:
+                return f"找不到代號【{msg}】的資料，請確認輸入是否正確。"
+            
+            if len(df) >= 2:
+                tc = df['Close'].iloc[-1]
+                to = df['Open'].iloc[-1]
+                pc = df['Close'].iloc[-2]
+                
+                dp = tc - pc
+                pp = (tc - pc) / pc * 100
+                do = tc - to
+                po = (tc - to) / to * 100
+                
+                sp = "🔺" if dp > 0 else ("🔻" if dp < 0 else "➖")
+                so = "🔺" if do > 0 else ("🔻" if do < 0 else "➖")
+                
+                return (f"【美股 / ETF】{msg}\n目前價格：{tc:.2f} USD\n---\n"
+                        f"前日收盤：{pc:.2f} USD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
+                        f"今日開盤：{to:.2f} USD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
+        except Exception as e:
+            return f"查詢錯誤：{str(e)}"
+            
     return None
 
 # ==========================================
-# 🌐 6. 伺服器與 LINE 路由處理
+# 🌐 7. 伺服器與 LINE 路由處理
 # ==========================================
 @app.route("/", methods=['GET'])
 def index(): return "Stock Bot is Alive!"
@@ -423,16 +455,12 @@ def callback():
 # ==========================================
 def async_ai_reply_task(reply_token, sid):
     try:
-        # 獲取 AI 生成文字與量化數據
         stock_name, report_pages, latest_price, historical_avg_pe, ttm_eps = get_ai_report_for_line(sid)
         
         messages = []
-        
-        # 1. 放入精美的 Flex Message 數據卡片 (第一張牌)
         flex_card = create_report_flex_card(sid, stock_name, latest_price, ttm_eps, historical_avg_pe)
         messages.append(flex_card)
         
-        # 2. 依序把 AI 的無表格條列式分析文字加入 (最多4個泡泡，加上卡片剛好5個滿編)
         for i, page_text in enumerate(report_pages):
             if i < 4: 
                 messages.append(TextSendMessage(text=page_text.strip()))
@@ -444,13 +472,11 @@ def async_ai_reply_task(reply_token, sid):
             
     except Exception as e:
         print(f"背景 AI 任務發生錯誤: {e}")
-        try:
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="抱歉，AI 報告生成超時或發生錯誤，請稍後再試。"))
-        except:
-            pass 
+        try: line_bot_api.reply_message(reply_token, TextSendMessage(text="抱歉，AI 報告生成超時或發生錯誤，請稍後再試。"))
+        except: pass 
 
 # ==========================================
-# 💬 7. 接收訊息與邏輯分流
+# 💬 8. 接收訊息與邏輯分流
 # ==========================================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event): 
@@ -497,14 +523,21 @@ def handle_message(event):
         
     result = get_quote(user_msg)
     if result and "找不到" not in result and "錯誤" not in result:
-        quick_reply = QuickReply(items=[
+        
+        # 根據是台股還是美股，決定下方跳出的按鈕
+        buttons = [
             QuickReplyButton(action=MessageAction(label="📈 當日走勢", text=f"走{user_msg}")),
-            QuickReplyButton(action=MessageAction(label="📊 K 線圖", text=f"K{user_msg}")),
-            QuickReplyButton(action=MessageAction(label="🤖 AI 深度報告", text=f"AI{user_msg}"))
-        ])
+            QuickReplyButton(action=MessageAction(label="📊 K 線圖", text=f"K{user_msg}"))
+        ]
+        
+        # 如果是全數字(台股)，才加上 AI 報告按鈕
+        if user_msg.isdigit():
+            buttons.append(QuickReplyButton(action=MessageAction(label="🤖 AI 深度報告", text=f"AI{user_msg}")))
+
+        quick_reply = QuickReply(items=buttons)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
     else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入正確代號"))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入正確代號（台股如 2330，美股如 AAPL）"))
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
