@@ -12,3 +12,5 @@ protobuf
 numpy
 gunicorn
 tqdm
+pandas
+openpyxl
