@@ -223,7 +223,6 @@ def get_ai_html_report(stock_id):
             html_code = html_code[7:]
         if html_code.endswith("```"):
             html_code = html_code[:-3]
-            
         return stock_name, html_code.strip(), latest_price, historical_avg_pe, ttm_eps
 
     except Exception as e:
