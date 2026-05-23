@@ -19,6 +19,7 @@ import traceback
 import google.generativeai as genai
 import threading
 import json
+import uuid  # 🌟 新增：用來產生唯一的網頁報告不重複 ID
 
 app = Flask(__name__)
 
@@ -27,7 +28,12 @@ app = Flask(__name__)
 # ==========================================
 GEMINI_API_KEY = "AIzaSyCiQU1PjlYDyk3onLYytPv2ldrVJwD2s8o"
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+
+# 🌟 升級：改用 gemini-2.5-pro，生成 HTML 的排版與美感最強
+model = genai.GenerativeModel('gemini-2.5-pro')
+
+# 🌟 升級：建立全域字典，用來暫存 AI 寫好的網頁報告
+report_storage = {}
 
 FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoid3V5aW50ZW5nIiwiZW1haWwiOiJ3dXlpbnRlbmcxMjA2QGdtYWlsLmNvbSIsInRva2VuX3ZlcnNpb24iOjB9.4roGRm1h6ihqAubqa5aqEDOweoFoXCkKuU408HXyt90" 
 IMGBB_API_KEY = "4bc61e9d363f21433c906beb7440dd92"
@@ -172,82 +178,64 @@ def get_finmind_data(stock_id):
     return stock_name, data_summary, latest_price, historical_avg_pe, ttm_eps
 
 # ==========================================
-# 🤖 4. AI 報告生成核心 (禁止 Markdown 表格版)
+# 🤖 4. AI 網頁報告生成核心 (解鎖 HTML+CSS)
 # ==========================================
-def get_ai_report_for_line(stock_id):
+def get_ai_html_report(stock_id):
     try:
         stock_name, real_data_context, latest_price, historical_avg_pe, ttm_eps = get_finmind_data(stock_id)
-        now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
         
+        # 🌟 升級：直接要求 Gemini 輸出精美的 HTML 網頁代碼（自帶深色科技感樣式）
         prompt = f"""
-        你是一位頂級的外資券商首席分析師。請為台股代號 【{stock_id} {stock_name}】 撰寫一份深度的個股研究報告。
+        你是一位頂級的外資券商首席分析師與前端設計大師。請為台股代號 【{stock_id} {stock_name}】 撰寫一份極致精美、高質感的個股研究報告網頁。
+        
         【系統量化、籌碼與技術面真實數據】：
         {real_data_context}
         
-        ⚠️ 【排版致命規則】：絕對禁止使用任何 Markdown 表格語法（例如 |---| 或表格排版）！通訊軟體無法解析。一律使用 Emoji 加上條列式來排版。請嚴格依照以下結構輸出：
+        【技術參數補充】：
+        * 歷史平均本益比：{historical_avg_pe} 倍
+        * 近四季累積 EPS：{ttm_eps} 元
+        * 最新收盤價：{latest_price} 元
 
-        # 🎯 核心評價與目標價
-        * 估值算式：(推估未來一年EPS _____ 元) × (歷史平均PE {historical_avg_pe}倍)
-        * AI 目標價：_____ 元
-        * 潛在空間：_____%
-        * 買賣評價：(強勢買進 / 逢低布局 / 中立觀望 / 避開減碼)
+        【格式與設計嚴格要求】：
+        1. 必須輸出一個完整的 HTML 網頁原始碼，包含 <!DOCTYPE html> <html> <head> 與 <body>。
+        2. 不要使用任何 Markdown 標記（如 ```html），直接以 HTML 字串輸出。
+        3. 視覺風格必須是高質感的「深色科技風」：
+           - 背景色使用深沉科技黑 (#0d1117 或 #121212)
+           - 主要卡片背景使用 #161b22，並帶有細微邊框 (#30363d) 與圓角 (12px)
+           - 主要文字使用白色與科技亮灰 (#e6edf2, #8b949e)
+           - 強調重點與「上漲/看多」一律使用高亮霓虹紅 (#ff4560 或 #ff5252)
+           - 「下跌/看空」一律使用高亮霓虹綠 (#00e396 或 #4caf50)
+        4. 版面配置需採用響應式設計 (Responsive)，確保在手機或電腦點開都能完美閱讀。數據請用非常乾淨漂亮的網頁表格 (Table) 呈現。
 
-        ---
-        # 🏢 公司基本資訊與估值
-        🔸 所屬產業：(填寫)
-        🔸 目前市值：(填寫)億元
-        🔸 本益比位階：(評估偏高/合理/偏低)
-
-        ---
-        # 🌟 五角雷達綜合評分 (總分：__/100)
-        1. 題材面 ( /20分)：(族群熱度)
-        2. 基本面 ( /20分)：(營收與EPS動能)
-        3. 技術面 ( /25分)：(量價結構與指標解析)
-        4. 籌碼面 ( /25分)：(法人動向)
-        5. 新聞面 ( /10分)：(市場催化劑)
-
-        ---
-        # 📄 第二頁：基本面與同業評比
-        🔸 核心業務與產品線：
-        (精簡條列說明佔比與成長動能)
-        
-        🔸 同業競爭力評比：(請用條列式，不要畫表格)
-        ▪️ [同業A名稱/代號]：核心差異...
-        ▪️ [同業B名稱/代號]：核心差異...
-
-        ---
-        # 📊 第三頁：籌碼與技術戰術
-        🔸 近期主力是誰？(土洋對作或集中度)
-        🔸 未來一週戰術建議：(支撐與防守價位)
+        【網頁內容結構】：
+        - 頂部大標題：【{stock_id} {stock_name}】AI 特戰深度個股研究報告
+        - 第一區塊（核心評價）：包含估值算式、AI 推估目標價、潛在獲利空間、強勢買進/逢低布局等核心戰術評級。
+        - 第二區塊（五角雷達戰力）：題材面、基本面、技術面、籌碼面、新聞面的分數（各20分，總分100）及短評。
+        - 第三區塊（基本面與競爭力）：核心業務、產品線與主要同業（代號與名稱）的競爭利基對比表。
+        - 第四區塊（策略與籌碼戰術）：主力籌碼狀態（土洋對作或主力集中）、未來一週的操作守備範圍（支撐價與壓力防守價）。
         """
+        
         response = model.generate_content(prompt)
-        full_report = response.text
+        html_code = response.text.strip()
         
-        paragraphs = full_report.split('---')
-        pages = []
-        current_page = ""
-        
-        for p in paragraphs:
-            clean_p = p.strip()
-            if not clean_p: continue
-            if len(current_page) + len(clean_p) < 800:
-                current_page += clean_p + "\n\n---\n\n"
-            else:
-                if current_page: pages.append(current_page.strip('- \n'))
-                current_page = clean_p + "\n\n---\n\n"
-                
-        if current_page:
-            pages.append(current_page.strip('- \n'))
+        # 防止模型不聽話加上了 
+```html 標籤，做一層防呆清洗
+        if html_code.startswith("```html"):
+            html_code = html_code[7:]
+        if html_code.endswith("
+```"):
+            html_code = html_code[:-3]
             
-        return stock_name, pages[:4], latest_price, historical_avg_pe, ttm_eps
+        return stock_name, html_code.strip(), latest_price, historical_avg_pe, ttm_eps
 
     except Exception as e:
-        return stock_id, [f"AI 分析失敗: {str(e)}"], 0, 0, 0
+        error_html = f"<html><body style='background:#121212;color:white;padding:20px;'><h2>❌ 報告生成失敗</h2><p>{str(e)}</p></body></html>"
+        return stock_id, error_html, 0, 0, 0
 
 # ==========================================
 # 🎨 5. 創建 Flex Message 卡片
 # ==========================================
-def create_report_flex_card(stock_id, stock_name, latest_price, ttm_eps, pe_ratio):
+def create_report_flex_card(stock_id, stock_name, latest_price, ttm_eps, pe_ratio, report_url):
     flex_json = {
       "type": "bubble",
       "size": "mega",
@@ -257,7 +245,7 @@ def create_report_flex_card(stock_id, stock_name, latest_price, ttm_eps, pe_rati
         "contents": [
           {
             "type": "text",
-            "text": "🤖 AI 深度特戰報告",
+            "text": "🤖 AI 首席特戰報告",
             "color": "#aaaaaa",
             "size": "sm",
             "weight": "bold"
@@ -326,18 +314,22 @@ def create_report_flex_card(stock_id, stock_name, latest_price, ttm_eps, pe_rati
       "footer": {
         "type": "box",
         "layout": "vertical",
+        "spacing": "sm",
         "contents": [
           {
-            "type": "text",
-            "text": "⬇️ 深度 AI 分析請見下方文字 ⬇️",
-            "color": "#aaaaaa",
-            "size": "xs",
-            "align": "center"
+            "type": "button",
+            "style": "primary",
+            "color": "#1DB446",
+            "action": {
+              "type": "uri",
+              "label": "🌐 點擊閱讀精美全幅報告",
+              "uri": report_url
+            }
           }
         ]
       }
     }
-    return FlexSendMessage(alt_text=f"【{stock_name}】深度分析報告", contents=flex_json)
+    return FlexSendMessage(alt_text=f"【{stock_name}】深度分析報告出爐", contents=flex_json)
 
 # ==========================================
 # 📈 6. 繪圖與報價函式 (含美股與上櫃修復)
@@ -361,7 +353,6 @@ def generate_chart(stock_id, chart_type="K"):
                 stock = yf.Ticker(f"{stock_id}.TW")
                 df = stock.history(period="5d", interval=req_interval)
                 
-                # 🌟 如果 .TW 抓不到資料，就當作是上櫃公司，改用 .TWO 再抓一次
                 if df.empty:
                     stock = yf.Ticker(f"{stock_id}.TWO")
                     df = stock.history(period="5d", interval=req_interval)
@@ -405,7 +396,6 @@ def generate_chart(stock_id, chart_type="K"):
 def get_quote(msg):
     msg = msg.upper().strip()
     
-    # 判斷是否為台股 (全數字)
     if msg.isdigit() and len(msg) >= 4:
         try:
             stock_name = tw_stock_dict.get(msg, "")
@@ -424,41 +414,36 @@ def get_quote(msg):
                         f"今日開盤：{to:.2f} TWD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
         except Exception as e: return f"查詢錯誤：{str(e)}"
         
-    # 若不是全數字，當作美股或 ETF 處理
     else:
         try:
             stock = yf.Ticker(msg)
             df = stock.history(period="5d")
-            
-            if df.empty:
-                return f"找不到代號【{msg}】的資料，請確認輸入是否正確。"
-            
+            if df.empty: return f"找不到代號【{msg}】的資料，請確認輸入是否正確。"
             if len(df) >= 2:
-                tc = df['Close'].iloc[-1]
-                to = df['Open'].iloc[-1]
-                pc = df['Close'].iloc[-2]
-                
-                dp = tc - pc
-                pp = (tc - pc) / pc * 100
-                do = tc - to
-                po = (tc - to) / to * 100
-                
+                tc, to, pc = df['Close'].iloc[-1], df['Open'].iloc[-1], df['Close'].iloc[-2]
+                dp, pp = tc - pc, (tc - pc) / pc * 100
+                do, po = tc - to, (tc - to) / to * 100
                 sp = "🔺" if dp > 0 else ("🔻" if dp < 0 else "➖")
                 so = "🔺" if do > 0 else ("🔻" if do < 0 else "➖")
-                
                 return (f"【美股 / ETF】{msg}\n目前價格：{tc:.2f} USD\n---\n"
                         f"前日收盤：{pc:.2f} USD\n總漲跌幅：{sp}{dp:+.2f} ({pp:+.2f}%)\n---\n"
                         f"今日開盤：{to:.2f} USD\n盤中走勢：{so}{do:+.2f} ({po:+.2f}%)")
-        except Exception as e:
-            return f"查詢錯誤：{str(e)}"
-            
+        except Exception as e: return f"查詢錯誤：{str(e)}"
     return None
 
 # ==========================================
-# 🌐 7. 伺服器與 LINE 路由處理
+# 🌐 7. 伺服器與 LINE / 網頁報告 路由處理
 # ==========================================
 @app.route("/", methods=['GET'])
 def index(): return "Stock Bot is Alive!"
+
+# 🌟 新增：專屬動態網頁報告的入口。當您在 LINE 點擊網址時，會觸發這裡直接吐出精美 HTML
+@app.route("/report/<report_id>", methods=['GET'])
+def show_report(report_id):
+    if report_id in report_storage:
+        return report_storage[report_id]  # 瀏覽器收到後會直接渲染出滿版高質感的分析網頁
+    else:
+        return "<html><body style='background:#121212;color:white;text-align:center;padding-top:100px;'><h2>❌ 報告已過期</h2><p>因為雲端主機重啟或超出暫存時間，請回到 LINE 重新輸入指令生成報告。</p></body></html>", 404
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -469,28 +454,31 @@ def callback():
     return 'OK'
 
 # ==========================================
-# ⚡ 專屬處理 AI 報告的背景線程
+# ⚡ 專屬處理 AI 報告的背景線程 (已改為網頁生成版)
 # ==========================================
 def async_ai_reply_task(reply_token, sid):
     try:
-        stock_name, report_pages, latest_price, historical_avg_pe, ttm_eps = get_ai_report_for_line(sid)
+        # 1. 呼叫新寫好的網頁生成函式
+        stock_name, ai_html_content, latest_price, historical_avg_pe, ttm_eps = get_ai_html_report(sid)
         
-        messages = []
-        flex_card = create_report_flex_card(sid, stock_name, latest_price, ttm_eps, historical_avg_pe)
-        messages.append(flex_card)
+        # 2. 隨機產生這份報告的唯一識別碼 (UUID)
+        report_id = str(uuid.uuid4())
         
-        for i, page_text in enumerate(report_pages):
-            if i < 4: 
-                messages.append(TextSendMessage(text=page_text.strip()))
+        # 3. 把 HTML 原始碼存進全域字典中
+        report_storage[report_id] = ai_html_content
         
-        if len(messages) > 1:
-            line_bot_api.reply_message(reply_token, messages)
-        else:
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="報告生成失敗，請稍後再試。"))
+        # 4. 建立您專屬的 Render 網頁連結
+        # ⚠️ 請把 'YOUR_RENDER_URL' 換成您真實的 Render 專案網址（例如 'my-stock-bot.onrender.com'）
+        YOUR_RENDER_URL = "mylinebot-wda9" 
+        report_url = f"https://{YOUR_RENDER_URL}.onrender.com/report/{report_id}"
+        
+        # 5. 生成帶有「點擊閱讀」按鈕的 Flex Message 卡片並回傳給 LINE
+        flex_card = create_report_flex_card(sid, stock_name, latest_price, ttm_eps, historical_avg_pe, report_url)
+        line_bot_api.reply_message(reply_token, flex_card)
             
     except Exception as e:
         print(f"背景 AI 任務發生錯誤: {e}")
-        try: line_bot_api.reply_message(reply_token, TextSendMessage(text="抱歉，AI 報告生成超時或發生錯誤，請稍後再試。"))
+        try: line_bot_api.reply_message(reply_token, TextSendMessage(text="抱歉，AI 報告生成發生錯誤，請稍後再試。"))
         except: pass 
 
 # ==========================================
@@ -541,14 +529,11 @@ def handle_message(event):
         
     result = get_quote(user_msg)
     if result and "找不到" not in result and "錯誤" not in result:
-        
-        # 根據是台股還是美股，決定下方跳出的按鈕
         buttons = [
             QuickReplyButton(action=MessageAction(label="📈 當日走勢", text=f"走{user_msg}")),
             QuickReplyButton(action=MessageAction(label="📊 K 線圖", text=f"K{user_msg}"))
         ]
         
-        # 如果是全數字(台股)，才加上 AI 報告按鈕
         if user_msg.isdigit():
             buttons.append(QuickReplyButton(action=MessageAction(label="🤖 AI 深度報告", text=f"AI{user_msg}")))
 
