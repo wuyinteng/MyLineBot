@@ -540,5 +540,6 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result if result else "請輸入正確代號（台股如 2330，美股如 AAPL）"))
 
 if __name__ == "__main__":
+    # 這行是 Render 能成功啟動的關鍵！
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
