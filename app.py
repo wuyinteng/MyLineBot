@@ -219,7 +219,7 @@ def get_ai_html_report(stock_id):
         html_code = response.text.strip()
         
         # 防止模型不聽話加上了 
-```html 標籤，做一層防呆清洗
+
         if html_code.startswith("```html"):
             html_code = html_code[7:]
         if html_code.endswith("
