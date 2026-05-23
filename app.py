@@ -21,6 +21,7 @@ import threading
 import json
 import uuid  # 🌟 新增：用來產生唯一的網頁報告不重複 ID
 
+
 app = Flask(__name__)
 
 # ==========================================
@@ -30,7 +31,7 @@ GEMINI_API_KEY = "AIzaSyCiQU1PjlYDyk3onLYytPv2ldrVJwD2s8o"
 genai.configure(api_key=GEMINI_API_KEY)
 
 # 🌟 升級：改用 gemini-2.5-pro，生成 HTML 的排版與美感最強
-model = genai.GenerativeModel('gemini-2.5-pro')
+model = genai.GenerativeModel('gemini-2.0-flash-lite')
 
 # 🌟 升級：建立全域字典，用來暫存 AI 寫好的網頁報告
 report_storage = {}
