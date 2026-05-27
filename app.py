@@ -172,7 +172,7 @@ def get_finmind_data(stock_id):
     return stock_name, data_summary, latest_price, historical_avg_pe, ttm_eps
 
 # ==========================================
-# 🤖 4. AI 報告生成核心 (禁止 Markdown 表格版)
+#  4. AI 報告生成核心 (禁止 Markdown 表格版)
 # ==========================================
 def get_ai_report_for_line(stock_id):
     try:
