@@ -550,7 +550,7 @@ def handle_message(event):
         
         # 如果是全數字(台股)，才加上 AI 報告按鈕
         if user_msg.isdigit():
-            buttons.append(QuickReplyButton(action=MessageAction(label="🤖 AI 深度報告", text=f"AI{user_msg}")))
+            buttons.append(QuickReplyButton(action=MessageAction(label=" AI 深度報告", text=f"AI{user_msg}")))
 
         quick_reply = QuickReply(items=buttons)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=result, quick_reply=quick_reply))
