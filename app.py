@@ -24,6 +24,9 @@ FINMIND_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoid3V5aW50ZW
 IMGBB_API_KEY = "4bc61e9d363f21433c906beb7440dd92"
 LINE_CHANNEL_ACCESS_TOKEN = '8g/5K/9WQ7EiuEm16BBJ/aOjy7beli9UQS1oKoX3Jswq1iGuYxvlvT+OLpWO4ZTjRWscQlvRknxmtdioggR+rILSsd28GBtd1lbDcvPgv1VEE6yzdGScPxD/Evstgxtd6+lFTohe+R5lBjVi/+fqpQdB04t89/1O/w1cDnyilFU='
 
+# ⚠️ 請填入你專屬的 LINE User ID (從 LINE Developers 後台 Basic settings 最下方取得)
+YOUR_LINE_USER_ID = "U288dc1f88aabee28ca0342d542b8040f" 
+
 dl = DataLoader()
 if FINMIND_TOKEN: dl.login_by_token(api_token=FINMIND_TOKEN)
 
@@ -51,14 +54,13 @@ def show_loading_animation(chat_id, loading_seconds=10):
     except: pass
 
 # ==========================================
-# 📈 2. 繪圖與報價函式 (含均線位置判斷)
+# 📈 2. 繪圖與報價函式 
 # ==========================================
 def generate_chart(stock_id, chart_type="K"):
     try:
         df = pd.DataFrame()
         ma_status_text = ""
         
-        # 轉換常見的四大指數中文關鍵字到對應代號
         index_mapping = {
             "道瓊": "^DJI", "標普": "^GSPC", "那斯達克": "^IXIC", "費城半導體": "^SOX", "費半": "^SOX"
         }
@@ -67,10 +69,8 @@ def generate_chart(stock_id, chart_type="K"):
                 stock_id = v
                 break
 
-        # 1. 處理台股 (全數字)
         if stock_id.isdigit():
             if chart_type == "K":
-                # K線圖多抓一點歷史數據（120天）以利計算 20日均線
                 start_date = (datetime.datetime.now() - timedelta(days=120)).strftime('%Y-%m-%d')
                 df = dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
                 if not df.empty:
@@ -92,11 +92,10 @@ def generate_chart(stock_id, chart_type="K"):
                     df = df[df.index.date == last_day]
                 plot_type, title_suffix, dt_format = 'line', "Intraday Trend", "%H:%M"
 
-        # 2. 處理美股與指數
         else:
             stock = yf.Ticker(stock_id)
             if chart_type == "K":
-                df = stock.history(period="6mo") # 多抓歷史數據確保均線完整
+                df = stock.history(period="6mo") 
                 if not df.empty: df.index = df.index.tz_localize(None)
                 plot_type, title_suffix, dt_format = 'candle', "3-Month Chart (MA 5/10/20)", "%m/%d"
             else:
@@ -111,7 +110,6 @@ def generate_chart(stock_id, chart_type="K"):
         
         if df.empty or len(df) < 2: return None, ""
 
-        # 🌟 核心修改：判斷目前股價與均線的相對位置
         if chart_type == "K" and len(df) >= 20:
             df['MA5'] = df['Close'].rolling(window=5).mean()
             df['MA10'] = df['Close'].rolling(window=10).mean()
@@ -120,7 +118,6 @@ def generate_chart(stock_id, chart_type="K"):
             latest = df.iloc[-1]
             c_price = latest['Close']
             
-            # 判斷位置：如果大於等於均線就是「站上(上)」，小於就是「跌破(下)」
             pos5 = "🔼 站上" if c_price >= latest['MA5'] else "🔽 跌破"
             pos10 = "🔼 站上" if c_price >= latest['MA10'] else "🔽 跌破"
             pos20 = "🔼 站上" if c_price >= latest['MA20'] else "🔽 跌破"
@@ -133,15 +130,12 @@ def generate_chart(stock_id, chart_type="K"):
                 f"▪️ 10日均線 ({latest['MA10']:.2f}): {pos10}均線\n"
                 f"▪️ 20日均線 ({latest['MA20']:.2f}): {pos20}均線"
             )
-            
-            # 畫圖時只留近 60 筆資料，畫面比較乾淨
             df = df.tail(60)
 
         buf = io.BytesIO()
         mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
         s = mpf.make_mpf_style(marketcolors=mc)
         
-        # 在 K 線圖模式下傳入 mav=(5, 10, 20) 參數畫出三條線
         if chart_type == "K":
             mpf.plot(df, type=plot_type, volume=(chart_type=="K" and "^" not in stock_id), style=s, title=f"[{stock_id}] {title_suffix}", ylabel="Price", datetime_format=dt_format, savefig=buf, show_nontrading=False, mav=(5, 10, 20))
         else:
@@ -231,7 +225,27 @@ def get_quote(msg):
 # 🌐 3. 伺服器與 LINE 路由處理
 # ==========================================
 @app.route("/", methods=['GET'])
-def index(): return "Stock Bot is Alive!"
+def index(): 
+    # 這個根目錄很適合給 cron job 設定每 10 分鐘敲一次，用來「防休眠」
+    return "Stock Bot is Alive and Awake!"
+
+# 🌟 新增：專門給 cron job 呼叫的主動推播路由
+@app.route("/cron_push", methods=['GET'])
+def cron_push():
+    try:
+        # 1. 取得四大指數報價
+        report = get_quote("四大指數")
+        
+        # 2. 組合推播訊息
+        push_msg = f"⏰ 【定時盤後/早盤報告】\n\n{report}"
+        
+        # 3. 使用 push_message 主動推播給指定使用者
+        line_bot_api.push_message(YOUR_LINE_USER_ID, TextSendMessage(text=push_msg))
+        
+        return "Push Triggered Successfully", 200
+    except Exception as e:
+        print(f"定時推播失敗: {e}")
+        return f"Push Failed: {e}", 500
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -255,7 +269,6 @@ def handle_message(event):
     if user_msg.startswith("K"):
         sid = user_msg.replace("K", "")
         show_loading_animation(chat_id)
-        # 🌟 接收圖片網址與均線位置判斷文字
         url, ma_status_text = generate_chart(sid, "K")
         stock_name = tw_stock_dict.get(sid, f"代號 {sid}")
         if url: 
